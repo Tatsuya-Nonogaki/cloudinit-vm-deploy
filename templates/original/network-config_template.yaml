@@ -1,0 +1,30 @@
+#cloud-init network-config template for RHEL9 VM (static IP, multiple NICs)
+version: 2
+ethernets:
+  {{netif1.netdev}}:
+    dhcp4: false
+    addresses: ["{{netif1.ip_addr}}/{{netif1.prefix}}"]   # e.g. 192.168.0.10/24
+    gateway4: {{netif1.gateway}}                          # e.g. 192.168.0.254
+    nameservers:
+      addresses: {{netif1.DNS_ADDRESSES}}                 # e.g. [192.168.0.201, 192.168.0.202]
+    dhcp6: false
+    ipv6: false
+
+  # Example: Second NIC (uncomment and edit as needed)
+# {{netif2.netdev}}:
+#   dhcp4: false
+#   addresses: ["{{netif2.ip_addr}}/{{netif2.prefix}}"]
+#  #gateway4: {{netif2.gateway}}                          # usually omit for non-primary NICs
+#   nameservers:
+#     addresses: {{netif2.DNS_ADDRESSES}}                 # usually empty for non-primary NICs
+#   dhcp6: false
+#   ipv6: false
+
+  # Example: DHCP NIC (rare in this framework, for reference only)
+# ens256:
+#   dhcp4: true
+
+# Notes:
+# - Interface names (ens192, ens224, etc.) must match the actual device names in the target VM.
+# - Second and subsequent NICs usually do NOT need gateway/nameservers; omit those lines entirely.
+

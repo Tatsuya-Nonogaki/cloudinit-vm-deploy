@@ -1,0 +1,69 @@
+#cloud-config
+# ======== Basic user-data template for RHEL9 cloud-init VM deployment ========
+#
+# Required parameters:
+#   - hostname: FQDN or short name
+#   - users: at least one user; the primary user must pre-exist on the Template VM and be a real, login-capable administrative account with password authentication enabled.
+#   - network: not set here (handled via network-config)
+#   - growpart: enabled for root device expansion
+#
+# Notes:
+# - The VM template's primary user must be a real, login-capable administrative account. This means the account can perform an interactive (local-equivalent) login via the VM console and must not be locked.
+# - Do NOT set `lock_passwd: true` (i.e., do not disable the primary user's password or make the template user SSH-only). VMware Tools guest operations (Invoke-VMScript and similar guest API guest operations) rely on password-based authentication and will not work with a password-disabled primary user.
+# - The primary user must be able to run at least `sudo /bin/bash` without being prompted for a password. Configure sudoers accordingly, for example, an appropriate `NOPASSWD:` rule limited to the minimal commands required.
+
+hostname: {{hostname}}
+
+users:
+  # User 1 (typically the primary admin user)
+  - name: {{user1.name}}
+    groups: {{user1.groups}}
+   #sudo: ALL=(ALL) NOPASSWD:ALL   # Uncomment only if you want cloud-init to set sudoers for this user
+    lock_passwd: false             # DO NOT set true in this framework (see above)
+    passwd: {{user1.password_hash}}
+    ssh_authorized_keys:           # Placeholder forms lines of ' - "ssh-rsa AAAAB3..."'; No need to comment-out these lines even if userN.ssh_keys list is empty
+{{user1.SSH_KEYS}}
+    shell: /bin/bash
+
+  # User 2
+#  - name: {{user2.name}}
+#    groups: {{user2.groups}}
+#    lock_passwd: false
+#    passwd: {{user2.password_hash}}
+#    ssh_authorized_keys:
+#{{user2.SSH_KEYS}}
+#    shell: /bin/bash
+
+chpasswd:
+  expire: false
+
+# Packages to install at first boot (to enable these, infra/cloud.cfg must be edited before running Phase-2; this kit intentionally removed package_update_upgrade_install module)
+# packages:
+#   - vim
+#   - git
+
+package_update: false
+package_upgrade: false
+
+growpart:
+  mode: auto
+  # List all mount points to be auto-expanded if their backing disk was enlarged in Phase 1.
+  # For example: ['/', '/dev/sdb1', '/var/crash']
+  devices: ['/', {{SWAPS_GROW}}'/var/crash']
+  ignore_growroot_disabled: false
+
+runcmd:{{USER_RUNCMD_BLOCK}}
+
+# If custom runcmd commands are required, they cannot be elsewhere than here
+#   - [ echo, "Hello, cloud-init!" ]
+
+# Customize hosts file (the file gets thoroughly overwritten)
+write_files:
+  - path: /etc/hosts
+    content: |
+      127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+      ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+      {{netif1.ip_addr}}  {{fqdn}} {{hostname}}
+    owner: root:root
+    permissions: '0644'
+

@@ -1,0 +1,4 @@
+#cloud-init meta-data template for RHEL9 VM
+instance-id: {{instance_id}}   # e.g. original01-20231003 (must be unique per VM)
+local-hostname: {{hostname}}   # e.g. original01
+
