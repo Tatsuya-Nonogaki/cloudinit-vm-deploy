@@ -2,6 +2,10 @@
 
 # Cloud-init Ready: Linux VM Deployment Kit on vSphere
 
+> 🔔 **Note:** This repository was split out from the **Straypenguins-Tips-Inventory** collection (original path: [vSphere/cloudinit-vm-deploy](https://github.com/Tatsuya-Nonogaki/Straypenguins-Tips-Inventory/tree/main/vSphere/cloudinit-vm-deploy)). The project grew large enough to justify its own repository; historical copies and prior context remain in the original repository's commit history.
+>
+> If you arrived here from the Tips Inventory, welcome — this repository now contains the full cloudinit-vm-deploy kit (sources, templates, examples, and documentation). Continue below for the project Overview and usage instructions.
+
 ## 🧭 Overview
 
 This kit is designed to enable quick deployment of Linux VMs from a **well-prepared** (not an out-of-the-box default) VM Template on vSphere, using the cloud-init framework. The main control program is a PowerShell script: `cloudinit-linux-vm-deploy.ps1`. The workflow is split into four phases:
@@ -309,5 +313,4 @@ Files in `infra/` (`cloud.cfg`, `99-template-maint.cfg`) are tuned to make the t
 
 ## 📜 License
 
-This project is licensed under the MIT License — see the repository `LICENSE` file for details.
-
+This project is licensed under the MIT License — see the repository [LICENSE](LICENSE) file for details.
