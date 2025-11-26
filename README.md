@@ -8,7 +8,7 @@
 
 ## 🧭 Overview
 
-This kit is designed to enable quick deployment of Linux VMs from a **well-prepared** (not an out-of-the-box default) VM Template on vSphere, using the cloud-init framework. The main control program is a PowerShell script: `cloudinit-linux-vm-deploy.ps1`. The workflow is split into four phases:
+This kit is designed to enable quick and reproducible deployment of Linux VMs from a **well-prepared** (not an out-of-the-box default) VM Template on vSphere, using the cloud-init framework. The main control program is a PowerShell script: `cloudinit-linux-vm-deploy.ps1`. The workflow is split into four phases:
 
 - **Phase 1:** Create a clone from a VM Template  
 - **Phase 2:** Prepare the clone to accept cloud-init  
