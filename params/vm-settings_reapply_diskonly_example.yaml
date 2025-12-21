@@ -1,0 +1,29 @@
+vcenter_host: vcenter01.backyard.local
+vcenter_user: administrator@vsphere.local
+vcenter_password: "Secret123!"
+
+# Target VM name (existing clone)
+new_vm_name: existing-vm01
+datacenter_name: VMDATACENTER
+seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"
+
+# Primary user for in-guest Invoke-VMScript operations (must exist on guest)
+user1:
+  name: admin01
+  primary: true
+  password: "AdminPass123!"
+
+# IMPORTANT: provide a fresh instance-id (different from the original deployment)
+instance_id: existing-vm01-reapply-20251209-01
+hostname: existing-vm01
+fqdn: existing-vm01.example.local
+
+# Disk targets (only what you need)
+resize_fs:
+  - /dev/sdc1
+
+swaps:
+  1: /dev/sdb1
+
+cloudinit_wait_sec: 300
+cloudinit_poll_sec: 10

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.1.7
+  Version: 0.1.8
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -31,6 +31,16 @@
 .PARAMETER Config
   (Alias -c) Path to parameter YAML file for the VM deployment.
 
+.PARAMETER DiskOnly
+  Set this when you want to reapply cloud-init exclusively for disk size expansion on the 
+  VM previously deployed with this kit. Before run you must:
+  * On guest, replace /etc/cloud/cloud.cfg with infra/cloud_diskonly.cfg.
+    (infra/prepare-diskonly-cloud-init.sh will ease this task)
+  * Copy templates/original/user-data_diskonly_template.yaml to templates/ if missing.
+  * Make a copy of params/vm-settings_reapply_diskonly_example.yaml and edit it.
+  * Run Phase 2, 3 and 4 with '-DiskOnly' passing the parameter file above by '-Config'.
+  Refer to README for more information.
+
 .PARAMETER NoRestart
   If set, automatic power-on/shutdown are disabled, except when multi-phase run is requested.
   In certain cases where the logic cannot be satisfied without a power-on/shutdown, user will 
@@ -53,6 +63,9 @@ param(
     [Parameter(Mandatory)]
     [Alias("c")]
     [string]$Config,
+
+    [Parameter()]
+    [switch]$DiskOnly,
 
     [Parameter()]
     [switch]$NoRestart,
@@ -696,7 +709,11 @@ function InitializeClone {
     }
 
     # Prepare the initialization script
-    $localInitPath = Join-Path $scriptdir "scripts/init-vm-cloudinit.sh"
+    if ($DiskOnly) {
+        $localInitPath = Join-Path $scriptdir "scripts/init-vm-cloudinit-diskonly.sh"
+    } else {
+        $localInitPath = Join-Path $scriptdir "scripts/init-vm-cloudinit.sh"
+    }
     if (-not (Test-Path $localInitPath)) {
         Write-Log -Error "Required script not found: $localInitPath"
         Exit 2
@@ -978,16 +995,23 @@ function CloudInitKickStart {
 
     # 3. Generate cloud-config YAMLs; user-data/meta-data/network-config from templates
     $tplDir = Join-Path $scriptdir "templates"
-    $seedFiles = @(
-        @{tpl="user-data_template.yaml"; out="user-data"},
-        @{tpl="meta-data_template.yaml"; out="meta-data"}
-    )
-    # Optional: network-config
-    $netTpl = Join-Path $tplDir "network-config_template.yaml"
-    if (Test-Path $netTpl) {
-        $seedFiles += @{tpl="network-config_template.yaml"; out="network-config"}
+    if ($DiskOnly) {
+        $seedFiles = @(
+            @{tpl="user-data_diskonly_template.yaml"; out="user-data"},
+            @{tpl="meta-data_template.yaml"; out="meta-data"}
+        )
     } else {
-        Write-Log "cloud-config YAML template: '$netTpl' not found; omitted."
+        $seedFiles = @(
+            @{tpl="user-data_template.yaml"; out="user-data"},
+            @{tpl="meta-data_template.yaml"; out="meta-data"}
+        )
+        # Optional: network-config
+        $netTpl = Join-Path $tplDir "network-config_template.yaml"
+        if (Test-Path $netTpl) {
+            $seedFiles += @{tpl="network-config_template.yaml"; out="network-config"}
+        } else {
+            Write-Log "cloud-config YAML template: '$netTpl' not found; omitted."
+        }
     }
 
     foreach ($f in $seedFiles) {
