@@ -27,3 +27,4 @@ swaps:
 
 cloudinit_wait_sec: 300
 cloudinit_poll_sec: 10
+
