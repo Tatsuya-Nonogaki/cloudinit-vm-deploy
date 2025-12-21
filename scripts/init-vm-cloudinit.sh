@@ -1,4 +1,4 @@
-#!/bin/sh -x
+#!/bin/sh -eux
 subscription-manager clean
 subscription-manager remove --all
 nmcli -t -f UUID,TYPE connection show 2>/dev/null | awk -F: '$2=="802-3-ethernet" { print $1 }' | while read UUID; do
