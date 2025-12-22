@@ -35,8 +35,6 @@
   Set this when you want to reapply cloud-init exclusively for disk size expansion on the 
   VM previously deployed with this kit. Before run you must:
   * Extend the desired VMDKs of the VM on vSphere
-  * On guest, replace /etc/cloud/cloud.cfg with infra/cloud_diskonly.cfg.
-    (infra/prepare-diskonly-cloud-init.sh will ease this task)
   * Copy templates/original/user-data_diskonly_template.yaml to templates/ if missing.
   * Make a copy of params/vm-settings_reapply_diskonly_example.yaml and edit it.
   * Run Phase 2, 3 and 4 with '-DiskOnly' passing the parameter file above by '-Config'.
