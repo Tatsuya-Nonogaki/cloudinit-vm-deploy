@@ -145,6 +145,8 @@ fi
 cat <<EOM >$OVR
 preserve_hostname: true
 manage_etc_hosts: false
+network:
+  config: disabled
 ssh_deletekeys: false
 ssh_genkeytypes: []
 EOM
