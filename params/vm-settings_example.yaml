@@ -47,8 +47,8 @@ resize_fs:
   #- /dev/sda3
 
 # == OS/Cloud-init Parameters ==
-hostname: original01
 instance_id: original01-20251001
+hostname: original01
 fqdn: original01.production.local
 
 netif1:
