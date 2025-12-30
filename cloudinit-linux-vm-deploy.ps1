@@ -34,7 +34,7 @@
 .PARAMETER DiskOnly
   Set this when you want to reapply cloud-init exclusively for disk size expansion on the 
   VM previously deployed with this kit. Before run you must:
-  * Extend the desired VMDKs of the VM on vSphere
+  * Extend the intended VMDKs of the VM on vSphere
   * Copy templates/original/user-data_diskonly_template.yaml to templates/ if missing.
   * Make a copy of params/vm-settings_reapply_diskonly_example.yaml and edit it.
   * Run Phase 2, 3 and 4 with '-DiskOnly' passing the parameter file above by '-Config'.
@@ -1028,7 +1028,7 @@ function CloudInitKickStart {
             if ($f.out -eq "user-data") {
                 $runcmdList = @()
 
-                # 1. --- Ext2/3/4 filesystems expansion
+                # 1. --- Ext2/3/4 filesystems expansion (resize2fs entries)
                 if ($params.resize_fs -and $params.resize_fs.Count -gt 0) {
                     foreach ($fsdev in $params.resize_fs) {
                         $runcmdList += @("[ resize2fs, $fsdev ]")
@@ -1075,6 +1075,8 @@ function CloudInitKickStart {
                         $swapdevs = $swapList -join " "
 
                         # Bash script for swap reinit (dividing into parts to avoid PowerShell variable expansion)
+                        # By packaging the shell script as a here-document in a cloud-init runcmd entry,
+                        # complex tasks are delegated to the target VM for reliable execution, avoiding extensive escaping.
                         $shBodyHead = @'
       #!/bin/bash
       set -eux
@@ -1098,62 +1100,64 @@ function CloudInitKickStart {
                         $shBody = $shBodyHead + "$swapdevs" + $shBodyTail
 
                         # Compose the here-document runcmd entry
-                        # By packaging the generated shell script as a here-document for cloud-init runcmd,
-                        # complex tasks are delegated to the target VM for reliable execution, avoiding extensive escaping.
-                        $swapScriptCmd = @"
+                        $swapScriptCmdCRLF = @"
 |
       bash -c 'cat <<"EOF" >$workDirOnVM/resize_swap.sh
 $shBody
       EOF
       '
 "@
+                        $swapScriptCmd = $swapScriptCmdCRLF -replace "`r`n", $charLF
 
                         $runcmdList += @("[ mkdir, -p, $workDirOnVM ]")
                         $runcmdList += @("[ chown, $guestUser, $workDirOnVM ]")
                         $runcmdList += @($swapScriptCmd)
+                        $runcmdList += @("[ sleep, 5 ]")
                         $runcmdList += @("[ bash, $workDirOnVM/resize_swap.sh ]")
                     }
                 }
 
                 # 3. --- Runcmd composition for network devices optimization
-                $netifKeys = $params.Keys | Where-Object { $_ -match '^netif\d+$' } | Sort-Object { [int]($_ -replace '^netif','') }
-                $conNamePrefix = "System "    # Change this if cloud-init on your environment behaves differently
+                if (-not $DiskOnly) {
+                    $netifKeys = $params.Keys | Where-Object { $_ -match '^netif\d+$' } | Sort-Object { [int]($_ -replace '^netif','') }
+                    $conNamePrefix = "System "    # Change this if cloud-init on your environment behaves differently
 
-                foreach ($netifKey in $netifKeys) {
-                    $cfg = $params[$netifKey]
-                    if (-not $cfg) { continue }
-                    $dev = $cfg["netdev"]
-                    if (-not $dev) { continue }
-                    $conName = "${conNamePrefix}$dev"
-                    $netifModified=$false
+                    foreach ($netifKey in $netifKeys) {
+                        $cfg = $params[$netifKey]
+                        if (-not $cfg) { continue }
+                        $dev = $cfg["netdev"]
+                        if (-not $dev) { continue }
+                        $conName = "${conNamePrefix}$dev"
+                        $netifModified=$false
 
-                    if ($cfg["ignore_auto_routes"]) {         # Not set if the key does not exist or the value is false/no/$null
-                        $cmd = @"
+                        if ($cfg["ignore_auto_routes"]) {
+                            $cmd = @"
 [ nmcli, connection, modify, "$conName", ipv4.ignore-auto-routes, yes ]
 "@
-                        $runcmdList += @($cmd)
-                        $netifModified=$true
-                    }
+                            $runcmdList += @($cmd)
+                            $netifModified=$true
+                        }
 
-                    if ($cfg["ignore_auto_dns"]) {
-                        $cmd = @"
+                        if ($cfg["ignore_auto_dns"]) {
+                            $cmd = @"
 [ nmcli, connection, modify, "$conName", ipv4.ignore-auto-dns, yes ]
 "@
-                        $runcmdList += @($cmd)
-                        $netifModified=$true
-                    }
+                            $runcmdList += @($cmd)
+                            $netifModified=$true
+                        }
 
-                    if ($cfg["ipv6_disable"]) {
-                        $cmd = @"
+                        if ($cfg["ipv6_disable"]) {
+                            $cmd = @"
 [ nmcli, connection, modify, "$conName", ipv6.method, disabled ]
 "@
-                        $runcmdList += @($cmd)
-                        $netifModified=$true
-                    }
+                            $runcmdList += @($cmd)
+                            $netifModified=$true
+                        }
 
-                    if ($netifModified) {
-                        $cmd = "[ nmcli, device, reapply, $dev ]"
-                        $runcmdList += @($cmd)
+                        if ($netifModified) {
+                            $cmd = "[ nmcli, device, reapply, $dev ]"
+                            $runcmdList += @($cmd)
+                        }
                     }
                 }
 
