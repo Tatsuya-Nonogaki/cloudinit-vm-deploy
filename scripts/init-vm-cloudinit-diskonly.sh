@@ -4,7 +4,7 @@
 # - Does NOT run `cloud-init clean` or truncate /etc/machine-id
 # - Creates a compressed tarball backup of cloud-init related state into a timestamped backup dir
 # - Removes /etc/cloud/cloud-init.disabled so Phase-3 seed can be applied
-# - Replaces /etc/cloud/cloud.cfg.d/99-override.cfg
+# - Replaces /etc/cloud/cloud.cfg and cloud.cfg.d/99-override.cfg
 #
 # Usage: copied to the guest and executed by Phase-2 via Invoke-VMScript / Copy-VMGuestFile
 # This script must be run with root privileges, otherwise no effect.
@@ -17,7 +17,7 @@ fi
 
 # Timestamped backup directory
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="/root/cloudinit-backup-$TIMESTAMP"
+BACKUP_DIR="/root/cloudinit-backup"
 ARCHIVE="${BACKUP_DIR}/cloudinit-backup-${TIMESTAMP}.tgz"
 
 mkdir -p "${BACKUP_DIR}"
@@ -72,8 +72,8 @@ cat <<'CLOUD_DFLT' > "$DST_CFG"
 #  - Modules are set to once-per-instance so a fresh instance-id will cause them to run.
 #
 # IMPORTANT:
-#  - Backup the existing /etc/cloud/cloud* ; init-vm-cloudinit-diskonly.sh will do it for you.
-#  - Do NOT include network/user/write_files changes in the seed (user-data) used for disk-only.
+#  - Existing /etc/cloud/cloud*, /var/log/cloud*.log are archived to $BACKUP_DIR (see above).
+#  - Do NOT include network/user/hosts changes in the seed (user-data) used for disk-only.
 #  - Test on a non-production VM first.
 
 users: []
@@ -90,24 +90,27 @@ ssh_genkeytypes: []
 # preserve_hostname: true
 # manage_etc_hosts: false
 
-# Minimal init-stage modules sufficient for reading the seed and performing disk ops.
-# Note: keep seed_random/bootcmd so cloud-init can read the seed datasource correctly.
+# Minimal cloud-init modules sufficient for reading the seed and performing disk ops.
+# Note: keep essentials so cloud-init can operate properly.
 cloud_init_modules:
   - [seed_random, once-per-instance]
   - [bootcmd, once-per-instance]
+  - [write_files, once-per-instance]
   - [growpart, once-per-instance]
   - [resizefs, once-per-instance]
   - [disk_setup, once-per-instance]
   - [mounts, once-per-instance]
   - [ca_certs, once-per-instance]
 
-# Allow runcmd so the seed's runcmd block can perform the resize/swap script.
 cloud_config_modules:
   - [runcmd, once-per-instance]
 
-# Minimal final modules: avoid package updates and other heavy actions.
 cloud_final_modules:
   - [write_files_deferred, once-per-instance]
+  - [scripts_per_once, once]
+  - [scripts_per_boot, once-per-instance]
+  - [scripts_per_instance, once-per-instance]
+  - [scripts_user, once-per-instance]
   - [final_message, once-per-instance]
 
 system_info:
