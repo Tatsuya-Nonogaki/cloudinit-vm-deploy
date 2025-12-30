@@ -1,30 +1,42 @@
+# Example vm-settings.yaml for cloudinit-linux-vm-deploy.ps1 : for disk-only reapplication
+
+# == Infrastructure (vCenter Connection) ==
 vcenter_host: vcenter01.backyard.local
 vcenter_user: administrator@vsphere.local
 vcenter_password: "Secret123!"
 
-# Target VM name (existing clone)
-new_vm_name: existing-vm01
+# == Target VM/Placement  (must exist already) ==
+new_vm_name: original01
 datacenter_name: VMDATACENTER
 seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"
 
-# Primary user for in-guest Invoke-VMScript operations (must exist on guest)
+# Primary user for in-guest operations (must exist on guest)
 user1:
   name: admin01
   primary: true
   password: "AdminPass123!"
 
-# IMPORTANT: provide a fresh instance-id (different from the original deployment)
-instance_id: existing-vm01-reapply-20251209-01
-hostname: existing-vm01
-fqdn: existing-vm01.example.local
-
-# Disk targets (only what you need)
-resize_fs:
-  - /dev/sdc1
-
+# == Disk targets (only what you intend to resize) ==
+# Swap devices: their partitions will be expanded (growpart) and the devices reinitialized (mkswap) so the swap fills the enlarged partitions.
 swaps:
   1: /dev/sdb1
 
-cloudinit_wait_sec: 300
-cloudinit_poll_sec: 10
+# List of device paths to expand filesystems with resize2fs after partition expansion.
+# Note: Including the root device (e.g., /dev/sda3) is optional; it will be resized by default.
+resize_fs:
+  - /dev/sdc1
+
+# == OS/Cloud-init Parameters ==
+# IMPORTANT: provide a fresh instance-id (different from the original deployment)
+instance_id: original01-reapply-20251209-01
+hostname: original01
+fqdn: original01.production.local
+
+# == Script tuning parameters ==
+# How long the script wait for cloud-init completion at Phase-3 (personalization)
+cloudinit_wait_sec: 300        # Default:600 in the script
+cloudinit_poll_sec: 10         # Default:10
+cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
+cloudinit_tools_poll_sec: 10   # Default:10
+cloudinit_backoff_sec: 45      # Pause before the polling above starts; default:60
 
