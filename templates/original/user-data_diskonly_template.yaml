@@ -1,0 +1,20 @@
+#cloud-config
+# Minimal user-data for disk-only reapply
+# DO NOT include network-config, write_files (hosts), users changes, or SSH key ops here.
+
+# IMPORTANT: Ensure 'hostname' parameter is the same as the current hostname to avoid surprises
+hostname: {{hostname}}
+
+# No users block modification; the template should not change users or passwords
+
+package_update: false
+package_upgrade: false
+
+growpart:
+  mode: auto
+  devices: ['/', {{SWAPS_GROW}}'/var/crash']
+  ignore_growroot_disabled: false
+
+# runcmd block for resize2fs and swap reinit
+runcmd:{{USER_RUNCMD_BLOCK}}
+

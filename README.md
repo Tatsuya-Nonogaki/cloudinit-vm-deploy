@@ -15,6 +15,9 @@ This kit is designed to enable quick and reproducible deployment of Linux VMs fr
 - **Phase 3:** Generate a cloud-init seed (user-data, meta-data, optional network-config), pack them into an ISO, upload it to a datastore and attach it to the clone's CD drive, then boot the VM and wait for cloud-init to complete  
 - **Phase 4:** Detach and remove the seed ISO from the datastore, then place `/etc/cloud/cloud-init.disabled` on the guest to prevent future automatic personalization (can be skipped with `-NoCloudReset`)
 
+📝 **Note — DiskOnly mode**  
+The primary workflow remains template → clone → initialization → personalization. In addition, this kit provides an optional extension called **DiskOnly Mode** that lets you reapply only disk expansion (partition/filesystem/swap) on VMs previously deployed with this kit. See [DiskOnly Reapply Mode](#-diskonly-reapply-mode) for details.
+
 ### ⚠️ Caution: Parameter and template format changes
 
 Recent changes introduced updates to parameter and seed-template formats (multi-user support, per-user SSH key placement, DNS nameserver handling, and a consolidated swaps mapping). Before applying these changes in an environment, validate the generated seed files:
@@ -37,6 +40,7 @@ See [UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md](UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md)
 - [Quick Start](#-quick-start-short-path)  
 - [Phases — What Does Each Step Perform?](#-phases--what-does-each-step-perform)  
 - [Template Infra: What is Changed and Why](#%EF%B8%8F-template-infra-what-is-changed-and-why)  
+- [DiskOnly Reapply Mode](#-diskonly-reapply-mode)  
 - [mkisofs / ISO Creation Notes](#-mkisofs--iso-creation-notes)  
 - [Operational Recommendations](#-operational-recommendations)  
 - [Troubleshooting (common cases)](#-troubleshooting-common-cases)  
@@ -59,7 +63,8 @@ This kit assumes the lifecycle: **template → new clone → initialization → 
 - Use PowerShell `-Verbose` to print detailed internal steps for debugging.
 
 ⚠️ **Important:**  
-This kit is designed for the template → clone → initialization → personalization flow. It is not intended to retrofit cloud-init onto arbitrary, already-running production VMs (at the time being).
+This kit is intended for the template → clone → initialization → personalization workflow. It is not meant as a general-purpose tool to retrofit cloud-init onto arbitrary running production VMs.  
+But note there is an exception; the optional [DiskOnly Reapply Mode](#-diskonly-reapply-mode) is provided for safely performing disk-only expansions on VMs originally deployed with this kit.
 
 ---
 
@@ -250,6 +255,53 @@ Files in `infra/` (`cloud.cfg`, `99-template-maint.cfg`) are tuned to make the t
 
 ---
 
+## 🔁 DiskOnly Reapply Mode
+
+### Overview & Use Cases
+The DiskOnly reapply mode, introduced in cloudinit-linux-vm-deploy.ps1 (v0.1.8), is an auxiliary flow that provides a convenient, low‑risk way to perform *only* disk expansion (partition, filesystem, and swap resizing) on VMs originally deployed with this kit via the full template → clone → initialization → personalization workflow.
+
+- Typically, expanding partitions requires manually removing and recreating partitions, running `fsck` and `resize2fs`, reformatting swap and editing `/etc/fstab`, etc. If the partition being expanded is the root filesystem, the process often also requires booting the VM from rescue media to perform the work offline. **DiskOnly** leverages cloud-init to perform these operations safely and automatically at the appropriate boot time, reducing risk and allowing less‑experienced operators to perform the task reliably.
+- This feature is an auxiliary path and does not replace the kit’s normal full-deploy workflow. It is not intended as a general-purpose configuration-change mechanism for arbitrary VMs, which may be missing required cloud-init components or the template-derived configuration under `/etc/cloud`.
+- As with regular partition operations, only partitions that are at the end of the disk can be expanded.
+
+### Design Considerations
+DiskOnly mode is designed to suppress the usual cloud-init effects such as user creation and network changes, and to run only the cloud-init modules required for disk operations. To work correctly, the kit must include the appropriate parameter file, seed YAML, and scripts in the tree.
+
+⚠️ **Important:**  
+A reapply is triggered by a different cloud-init `instance_id` than the previous deployment. For DiskOnly mode, ensure the `instance_id` in your parameter file is different from the original deployment (for example, append or replace a date suffix).  
+An alternative way is to clear previous cloud-init *instance_id* along with cache data by running `cloud-init clean` (if you do not care they are gone).  
+
+Conversely, except for the core disk-related parameters (`resize_fs`, `swaps`), other values such as `hostname` should remain the same as the current guest settings.
+
+🚨 **Warning:**  
+Always test in a non-production environment first (use VM snapshots). See the general operational cautions elsewhere in this README.
+
+### Workflow
+1. On vSphere, expand the target VMDK(s) of the VM. Disk expansion will not be triggered unless there is available space at the device level.
+2. Copy the DiskOnly sample parameter file `params/original/vm-settings_reapply_diskonly_example.yaml` into `params/` and edit it for your environment. You may rename the file (for example `vm-settings_reapply_diskonly_myvm01.yaml`).  
+📌 Set `instance_id` in your parameter file to a value different from the original deployment.
+3. Run the kit in DiskOnly mode; this mode never requires Phase-1. Example:
+   ```powershell
+   .\cloudinit-linux-vm-deploy.ps1 -Config params/vm-settings_reapply_diskonly_myvm01.yaml -DiskOnly -Phase 2,3
+   ```
+   - Phase‑2 copies and executes `scripts/init-vm-cloudinit-diskonly.sh` on the guest. That script first creates an archive backup of existing `/etc/cloud*` and `/var/log/cloud*.log` to `/root/cloudinit-backup/`, removes `cloud-init.disabled` marker if present, and installs the DiskOnly-specific `cloud.cfg` and `cloud.cfg.d/99-override.cfg` (embedded in the script).
+   - Phase‑3 generates a seed ISO from `user-data_diskonly_template.yaml` and `meta-data_template.yaml` and applies it; `growpart` and `resizefs` (and any `runcmd` for swap reinitialization) run under the DiskOnly configuration.
+
+   - Check the VM state and logs as needed before proceeding to the next phase.
+
+4. Detach the seed ISO and recreate `cloud-init.disalbled` marker to deactivate cloud-init by running Phase-4. Example:
+   ```powershell
+   .\cloudinit-linux-vm-deploy.ps1 -Config params/vm-settings_reapply_diskonly_myvm01.yaml -Phase 4
+   ```
+   Note: The `-DiskOnly` option has no effect in Phase 4 and can be omitted.
+
+### DiskOnly-specific Files
+- **`scripts/init-vm-cloudinit-diskonly.sh`** — DiskOnly preparation script executed on the guest by Phase‑2 (backs up existing cloud config, removes `cloud-init.disabled` marker, and installs the DiskOnly `cloud.cfg` and override config entries. The *cloud configs* tuned for DiskOnly operation is embedded in the script.
+- **`templates/original/user-data_diskonly_template.yaml`** — DiskOnly user-data template; copy it into `templates/` prior to running Phase-3.
+- **`params/vm-settings_reapply_diskonly_example.yaml`** — Example parameter file to copy and edit for your run.
+
+---
+
 ## 💿 mkisofs & ISO Creation Notes
 
 - The script's default `$mkisofs` points to a Win32 `mkisofs.exe` from the cdrtfe distribution. If you use a different ISO tool (for example `genisoimage` under WSL), update variables `$mkisofs` (global) and `$mkArgs` (Phase-3 local) in the script.  
@@ -314,3 +366,4 @@ Files in `infra/` (`cloud.cfg`, `99-template-maint.cfg`) are tuned to make the t
 ## 📜 License
 
 This project is licensed under the MIT License — see the repository [LICENSE](LICENSE) file for details.
+
