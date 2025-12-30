@@ -15,5 +15,6 @@ growpart:
   devices: ['/', {{SWAPS_GROW}}'/var/crash']
   ignore_growroot_disabled: false
 
-# runcmd limited to resize and swap reinit (template expects Replace-Placeholders to inject USER_RUNCMD_BLOCK)
+# runcmd block for resize2fs and swap reinit
 runcmd:{{USER_RUNCMD_BLOCK}}
+
