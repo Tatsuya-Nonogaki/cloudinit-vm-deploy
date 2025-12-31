@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.1.8
+  Version: 0.1.9
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -1036,8 +1036,10 @@ function CloudInitKickStart {
                 }
 
                 # 2. --- Swap devices expansion
+                $swapsToGrow = ""
+                $swapList = @()
+
                 if ($params.swaps) {
-                    $swapList = @()
                     try {
                         $keys = $params.swaps.Keys
 
@@ -1064,12 +1066,8 @@ function CloudInitKickStart {
 
                         if ($swapsQuoted -and $swapsQuoted.Count -gt 0) {
                             $swapsToGrow = ($swapsQuoted -join ", ") + ", "
-                        } else {
-                            $swapsToGrow = " "
                         }
-
-                        $template = $template -replace '\{\{SWAPS_GROW\}\}', $swapsToGrow
-                        Write-Log "SWAPS_GROW placeholder replaced: `"$swapsToGrow`""
+                        # Actual replacement is delayed until end of this block
 
                         # -- Runcmd composition for swap-space reformatting
                         $swapdevs = $swapList -join " "
@@ -1116,6 +1114,10 @@ $shBody
                         $runcmdList += @("[ bash, $workDirOnVM/resize_swap.sh ]")
                     }
                 }
+
+                # Actual replacement for partitions growpart (may be replaced with null)
+                $template = $template -replace '\{\{SWAPS_GROW\}\}', $swapsToGrow
+                Write-Log "SWAPS_GROW placeholder replaced: `"$swapsToGrow`""
 
                 # 3. --- Runcmd composition for network devices optimization
                 if (-not $DiskOnly) {
@@ -2049,4 +2051,3 @@ foreach ($p in $phaseSorted) {
 }
 
 Write-Log "Deployment script completed."
-
