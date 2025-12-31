@@ -268,9 +268,8 @@ The DiskOnly reapply mode, introduced in cloudinit-linux-vm-deploy.ps1 (v0.1.8),
 DiskOnly mode is designed to suppress the usual cloud-init effects such as user creation and network changes, and to run only the cloud-init modules required for disk operations. To work correctly, the kit must include the appropriate parameter file, seed YAML, and scripts in the tree.
 
 ⚠️ **Important:**  
-A reapply is triggered by a different cloud-init `instance_id` than the previous deployment. For DiskOnly mode, ensure the `instance_id` in your parameter file is different from the original deployment (for example, append or replace a date suffix).  
-An alternative way is to clear previous cloud-init *instance_id* along with cache data by running `cloud-init clean` (if you do not care they are gone).  
-
+A reapply is triggered by a different cloud-init `instance_id` than the previous deployment. For DiskOnly mode, ensure the `instance_id` in your parameter file has never been used in any previous deployment (for example, append or replace a date suffix at least).  
+Alternatively, you can clear the previous cloud-init *instance_id* along with cache data by running `cloud-init clean`, if this data is not critical in your environment.  
 Conversely, except for the core disk-related parameters (`resize_fs`, `swaps`), other values such as `hostname` should remain the same as the current guest settings.
 
 🚨 **Warning:**  
@@ -278,13 +277,16 @@ Always test in a non-production environment first (use VM snapshots). See the ge
 
 ### Workflow
 1. On vSphere, expand the target VMDK(s) of the VM. Disk expansion will not be triggered unless there is available space at the device level.
+
 2. Copy the DiskOnly sample parameter file `params/original/vm-settings_reapply_diskonly_example.yaml` into `params/` and edit it for your environment. You may rename the file (for example `vm-settings_reapply_diskonly_myvm01.yaml`).  
-📌 Set `instance_id` in your parameter file to a value different from the original deployment.
+
+   📌 Set the `instance_id` in your parameter file to a value that has never been used in any previous deployment fot this VM.
+
 3. Run the kit in DiskOnly mode; this mode never requires Phase-1. Example:
    ```powershell
    .\cloudinit-linux-vm-deploy.ps1 -Config params/vm-settings_reapply_diskonly_myvm01.yaml -DiskOnly -Phase 2,3
    ```
-   - Phase‑2 copies and executes `scripts/init-vm-cloudinit-diskonly.sh` on the guest. That script first creates an archive backup of existing `/etc/cloud*` and `/var/log/cloud*.log` to `/root/cloudinit-backup/`, removes `cloud-init.disabled` marker if present, and installs the DiskOnly-specific `cloud.cfg` and `cloud.cfg.d/99-override.cfg` (embedded in the script).
+   - Phase‑2 copies and executes `scripts/init-vm-cloudinit-diskonly.sh` on the guest. That script first creates an archive backup of existing `/etc/cloud*` and `/var/log/cloud*.log` under `/root/cloudinit-backup/`, removes `cloud-init.disabled` marker if present, and installs the DiskOnly-specific `cloud.cfg` and `cloud.cfg.d/99-override.cfg` (embedded in the script).
    - Phase‑3 generates a seed ISO from `user-data_diskonly_template.yaml` and `meta-data_template.yaml` and applies it; `growpart` and `resizefs` (and any `runcmd` for swap reinitialization) run under the DiskOnly configuration.
 
    - Check the VM state and logs as needed before proceeding to the next phase.
@@ -366,4 +368,3 @@ Always test in a non-production environment first (use VM snapshots). See the ge
 ## 📜 License
 
 This project is licensed under the MIT License — see the repository [LICENSE](LICENSE) file for details.
-
