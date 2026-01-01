@@ -12,7 +12,7 @@ package_upgrade: false
 
 growpart:
   mode: auto
-  devices: ['/', {{SWAPS_GROW}}'/var/crash']
+  devices: ['/'{{FS_GROW}}]
   ignore_growroot_disabled: false
 
 # runcmd block for resize2fs and swap reinit

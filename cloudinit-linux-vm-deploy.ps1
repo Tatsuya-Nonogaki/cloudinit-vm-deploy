@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.1.9
+  Version: 0.2.0
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -1028,16 +1028,10 @@ function CloudInitKickStart {
             if ($f.out -eq "user-data") {
                 $runcmdList = @()
 
-                # 1. --- Ext2/3/4 filesystems expansion (resize2fs entries)
-                if ($params.resize_fs -and $params.resize_fs.Count -gt 0) {
-                    foreach ($fsdev in $params.resize_fs) {
-                        $runcmdList += @("[ resize2fs, $fsdev ]")
-                    }
-                }
-
-                # 2. --- Swap devices expansion
-                $swapsToGrow = ""
-                $swapList = @()
+                # 1. --- Replace FS_GROW placeholder in "growpart" section of YAML; concurrently,
+                # prepare an array of swaps for later construction of swap reformat runcmd entries
+                $growDevices = @()
+                $swapList    = @()
 
                 if ($params.swaps) {
                     try {
@@ -1052,35 +1046,65 @@ function CloudInitKickStart {
                         }
 
                         foreach ($k in $sortedKeys) {
-                            $val = $params.swaps[$k]
-                            if ($val) { $swapList += [string]$val }
+                            $raw = $params.swaps[$k]
+                            $val = if ($null -ne $raw) { $raw.ToString().Trim() } else { "" }
+                            if ($val) {
+                                $swapList += $val
+                                if (-not ($growDevices -contains $val)) {
+                                    $growDevices += $val
+                                }
+                            }
                         }
                     } catch {
-                        Write-Verbose "Failed to derive swap list from swaps mapping: $_"
-                        $swapList = @()
+                        Write-Log -Error "Failed to derive swap list from swaps mapping: $_"
+                        $growDevices = @()
+                        $swapList    = @()
                     }
+                }
 
-                    if ($swapList.Count -gt 0) {
-                        # -- Placeholder replacement for partitions growpart
-                        $swapsQuoted = $swapList | ForEach-Object { "'$($_.ToString().Trim())'" }
-
-                        if ($swapsQuoted -and $swapsQuoted.Count -gt 0) {
-                            $swapsToGrow = ($swapsQuoted -join ", ") + ", "
+                if ($params.resize_fs -and $params.resize_fs.Count -gt 0) {
+                    foreach ($fsRaw in $params.resize_fs) {
+                        $fsdev = if ($null -ne $fsRaw) { $fsRaw.ToString().Trim() } else { "" }
+                        if ($fsdev) {
+                            if (-not ($growDevices -contains $fsdev)) {
+                                $growDevices += $fsdev
+                            }
                         }
-                        # Actual replacement is delayed until end of this block
+                    }
+                }
 
-                        # -- Runcmd composition for swap-space reformatting
-                        $swapdevs = $swapList -join " "
+                $fsGrow = ""
+                if ($growDevices.Count -gt 0) {
+                    $quoted = $growDevices | ForEach-Object { "'$($_)'" }
+                    $fsGrow = ", " + ($quoted -join ", ")
+                }
 
-                        # Bash script for swap reinit (dividing into parts to avoid PowerShell variable expansion)
-                        # By packaging the shell script as a here-document in a cloud-init runcmd entry,
-                        # complex tasks are delegated to the target VM for reliable execution, avoiding extensive escaping.
-                        $shBodyHead = @'
+                $template = $template -replace '\{\{FS_GROW\}\}', $fsGrow
+                Write-Log "FS_GROW placeholder replaced: `"$fsGrow`""
+
+                # 2. --- Construct runcmd "resize2fs" entries for ext2/3/4 filesystems
+                if ($params.resize_fs -and $params.resize_fs.Count -gt 0) {
+                    foreach ($fsRaw in $params.resize_fs) {
+                        $fsdev = if ($null -ne $fsRaw) { $fsRaw.ToString().Trim() } else { "" }
+                        if ($fsdev) {
+                            $runcmdList += @("[ resize2fs, $fsdev ]")
+                        }
+                    }
+                }
+
+                # 3. --- Construct swap devices expansion (reformatting) runcmd entries
+                if ($swapList.Count -gt 0) {
+                    $swapdevs = $swapList -join " "
+
+                    # Bash script for swap reinit (dividing into parts to avoid PowerShell variable expansion)
+                    # By packaging the shell script as a here-document in a cloud-init runcmd entry,
+                    # complex tasks are delegated to the target VM for reliable execution, avoiding extensive escaping.
+                    $shBodyHead = @'
       #!/bin/bash
       set -eux
       for swapdev in 
 '@
-                        $shBodyTail = @'
+                    $shBodyTail = @'
       ; do
         OLDUUID=$(blkid -s UUID -o value "$swapdev")
         OLDSWAPUNIT=$(systemd-escape "dev/disk/by-uuid/$OLDUUID").swap
@@ -1095,31 +1119,26 @@ function CloudInitKickStart {
       done
       dracut -f
 '@
-                        $shBody = $shBodyHead + "$swapdevs" + $shBodyTail
+                    $shBody = $shBodyHead + "$swapdevs" + $shBodyTail
 
-                        # Compose the here-document runcmd entry
-                        $swapScriptCmdCRLF = @"
+                    # Compose the here-document runcmd entry
+                    $swapScriptCmdCRLF = @"
 |
       bash -c 'cat <<"EOF" >$workDirOnVM/resize_swap.sh
 $shBody
       EOF
       '
 "@
-                        $swapScriptCmd = $swapScriptCmdCRLF -replace "`r`n", $charLF
+                    $swapScriptCmd = $swapScriptCmdCRLF -replace "`r`n", $charLF
 
-                        $runcmdList += @("[ mkdir, -p, $workDirOnVM ]")
-                        $runcmdList += @("[ chown, $guestUser, $workDirOnVM ]")
-                        $runcmdList += @($swapScriptCmd)
-                        $runcmdList += @("[ sleep, 5 ]")
-                        $runcmdList += @("[ bash, $workDirOnVM/resize_swap.sh ]")
-                    }
+                    $runcmdList += @("[ mkdir, -p, $workDirOnVM ]")
+                    $runcmdList += @("[ chown, $guestUser, $workDirOnVM ]")
+                    $runcmdList += @($swapScriptCmd)
+                    $runcmdList += @("[ sleep, 5 ]")
+                    $runcmdList += @("[ bash, $workDirOnVM/resize_swap.sh ]")
                 }
 
-                # Actual replacement for partitions growpart (may be replaced with null)
-                $template = $template -replace '\{\{SWAPS_GROW\}\}', $swapsToGrow
-                Write-Log "SWAPS_GROW placeholder replaced: `"$swapsToGrow`""
-
-                # 3. --- Runcmd composition for network devices optimization
+                # 4. --- Runcmd composition for network devices optimization
                 if (-not $DiskOnly) {
                     $netifKeys = $params.Keys | Where-Object { $_ -match '^netif\d+$' } | Sort-Object { [int]($_ -replace '^netif','') }
                     $conNamePrefix = "System "    # Change this if cloud-init on your environment behaves differently
@@ -1163,7 +1182,7 @@ $shBody
                     }
                 }
 
-                # 4. --- Finally compose USER_RUNCMD_BLOCK for user-data template
+                # 5. --- Complete composition of USER_RUNCMD_BLOCK for user-data template
                 if ($runcmdList.Count -gt 0) {
                     $userRuncmdBlock = $runcmdList -join "`n  - "
                     $userRuncmdBlock = "`n  - " + $userRuncmdBlock
@@ -1174,7 +1193,7 @@ $shBody
                 $template = $template -replace '\{\{USER_RUNCMD_BLOCK\}\}', $userRuncmdBlock
                 Write-Log "USER_RUNCMD_BLOCK placeholder replaced (runcmd count: $($runcmdList.Count))"
 
-                # 5. --- Placeholder replacement for SSH_KEYS block per user
+                # 6. --- Placeholder replacement for SSH_KEYS block per user
                 $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
                 foreach ($userKey in $userKeys) {
                     $u = $params[$userKey]
@@ -2051,3 +2070,4 @@ foreach ($p in $phaseSorted) {
 }
 
 Write-Log "Deployment script completed."
+
