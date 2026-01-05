@@ -1,10 +1,11 @@
 # Upgrade notes — parameter & template format changes
 
-This document summarizes the parameter and seed-template format changes introduced recently. It is intended to help you update existing parameter files and templates and to verify outputs before applying changes to any important systems.
+This document summarizes the parameter and seed-template format changes that were introduced between `cloudinit-linux-vm-deploy.ps1` versions **0.1.5** and **0.1.7**. It is intended to help you update existing parameter files and templates in lockstep with the main script and to verify the generated outputs before applying changes to any important systems.
 
 ---
 
 ## Summary of notable changes
+- Parameter and seed-template format updates introduced between `cloudinit-linux-vm-deploy.ps1` versions **0.1.5** and **0.1.7**
 - Multi-user support: define users as `user1`, `user2`, ... blocks in the parameter file. Each block can contain name, groups, password/password_hash, ssh_keys, and a `primary: true` flag to choose the primary user for in-guest operations.
 - Per-user SSH key placement: user-data templates now support per-user placeholders (e.g., `{{user1.SSH_KEYS}}`) so each user can have its own `ssh_authorized_keys` block.
 - DNS (nameservers) flexibility: network interface DNS entries can be specified as a single value or as an array in parameters; templates receive a safe bracketed representation (e.g., `[192.0.2.1, 192.0.2.2]`) for Netplan/cloud-init nameservers.
@@ -123,4 +124,3 @@ Check: YAML syntax, `ssh_authorized_keys` entries, `nameservers` representation,
 
 ---  
 If you find any unexpected output in the generated seed files, save the generated `user-data` / `network-config` snippets and compare them to your template/params inputs; that will make troubleshooting straightforward. This document is a concise migration aid; it does not guarantee instant support availability.
-
