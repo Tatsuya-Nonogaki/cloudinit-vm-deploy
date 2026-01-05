@@ -20,7 +20,7 @@ The primary workflow remains template → clone → initialization → personali
 
 ### ⚠️ Caution: Parameter and template format changes
 
-Recent changes introduced updates to parameter and seed-template formats (multi-user support, per-user SSH key placement, DNS nameserver handling, and a consolidated swaps mapping). Before applying these changes in an environment, validate the generated seed files:
+Between `cloudinit-linux-vm-deploy.ps1` versions **0.1.5** and **0.1.7**, updates were introduced to the parameter and seed‑template formats (multi-user support, per-user SSH key placement, DNS nameserver handling, and a consolidated swaps mapping). When your main script version crosses this range, you must upgrade the parameter files and seed template YAMLs in lockstep with `cloudinit-linux-vm-deploy.ps1`. To verify that they are coordinated correctly, validate the generated seed files:
 
 - Run the script with Phase 3 only and with `-NoRestart` to produce the seed files without reapplying personalization to a VM:
   ```powershell
