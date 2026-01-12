@@ -137,6 +137,25 @@ It may consist of considerable minimal resources, e.g., 2 CPUs, 2.1GB memory, 8G
 Get-Help ./cloudinit-linux-vm-deploy.ps1 -Detailed
 ```
 
+### 📌 Name resolution behavior on deployed VMs (observed on RHEL 9.6)
+
+When this kit is used with RHEL 9.6 and its cloud-init packages, we observed the following **distribution‑specific** behavior:
+
+- The effective resolver configuration is taken from `/etc/resolv.conf`, which is a regular file (not a symlink).
+- Even if the original **Template VM** was in a state where NetworkManager would update `/etc/resolv.conf` when DNS settings were changed, the **first cloud-init run on the clone** can alter that behavior.
+- On some RHEL 9.6 + cloud-init combinations, the first cloud-init run on the clone can install `/etc/NetworkManager/conf.d/99-cloud-init.conf` with:
+  ```ini
+  [main]
+  dns=none
+  ```
+  In that case, NetworkManager no longer manages DNS and does not update `/etc/resolv.conf` when you change DNS settings in `nmtui`, GUI tools, or `nmcli`. Only the contents of `/etc/resolv.conf` affect name resolution.
+
+This behavior is determined by the **OS distribution and its cloud-init/NetworkManager integration**, not by this kit’s PowerShell / shell scripts. For this reason, the default supported posture of the kit is:
+
+- **DNS resolver settings should be managed directly via `/etc/resolv.conf` on the guest.**
+
+If you prefer to have NetworkManager manage DNS on a deployed VM, you can opt in by adjusting `/etc/NetworkManager/conf.d/99-cloud-init.conf` as described in the Troubleshooting section; see [“NetworkManager DNS changes do not affect name resolution”](#-troubleshooting-common-cases).
+
 ---
 
 ## 🔁 Phases — What Does Each Step Perform?
@@ -346,6 +365,86 @@ Always test in a non-production environment first (use VM snapshots). See the ge
   - Ensure the partition you intend to grow is the last partition on that disk; this kit's non‑LVM helpers cannot expand non-last partitions.  
   - If the disk Name and partition placement are correct but the guest size is unchanged, check the admin-host log `spool/<new_vm_name>/deploy-YYYYMMDD.log` for `Set-HardDisk` messages and errors.  
   - For filesystem-level resizing, this kit supports ext2/3/4 and swap; XFS and LVM-managed volumes are not supported.
+
+- **NetworkManager DNS changes do not affect name resolution**
+
+  **Symptoms**
+
+  On a Linux VM deployed with this kit, you change DNS servers in NetworkManager (for example with `nmtui`, a GUI configuration tool, or `nmcli`) and restart NetworkManager or reboot, but:
+
+  - `/etc/resolv.conf` does **not** change, and  
+  - actual name resolution continues to use the old DNS servers until you edit `/etc/resolv.conf` manually.
+
+  **Cause (distribution / cloud-init behavior, not kit logic)**
+
+  This behavior was observed on some RHEL 9.6 environments, and it may also appear with other distributions or release/cloud-init combinations.  
+  In those environments, the first cloud-init run on the clone writes `/etc/NetworkManager/conf.d/99-cloud-init.conf`:
+
+  ```ini
+      [main]
+      dns=none
+  ```
+
+  With `dns=none` in effect, NetworkManager is explicitly instructed **not** to manage DNS and leaves `/etc/resolv.conf` to other mechanisms or manual edits.  
+
+  Even if the Template VM was originally configured such that NetworkManager updated `/etc/resolv.conf` when DNS was changed (for example via `nmtui`), this clone-time cloud-init behavior can switch the deployed VM into a “static `/etc/resolv.conf`” mode.
+
+  This repository’s scripts and infra files do **not** create or modify this file; it is produced by the distribution‑provided cloud-init / NetworkManager integration. The kit also does not change `/etc/resolv.conf` itself.
+
+  As a result, on such systems:
+
+  - `/etc/resolv.conf` behaves as a static file by default.
+  - Per‑connection DNS settings in NetworkManager do not change name resolution unless you reconfigure NetworkManager to manage DNS again.
+
+  **Default kit behavior**
+
+  To keep the implementation simple and robust across distributions, this kit:
+
+  - Assumes **resolver settings are managed directly in `/etc/resolv.conf`** on deployed VMs.
+  - Does not attempt to override the OS/cloud-init DNS policy or to adjust NetworkManager’s `[main] dns=` setting automatically.
+
+  If this default is acceptable for your environment, continue to manage DNS by editing `/etc/resolv.conf` on the guest.
+
+  **Opt-in: allow NetworkManager to manage DNS again**
+
+  If you prefer NetworkManager‑driven DNS on a particular VM, you can adjust its policy manually:
+
+  1. Check whether the cloud-init NetworkManager fragment exists:
+
+     ```sh
+     sudo ls -l /etc/NetworkManager/conf.d/99-cloud-init.conf
+     ```
+
+  2. If the file exists, choose **one** of the following:
+
+     - **Delete the file** so that NetworkManager falls back to its default DNS behavior  
+       (only do this if the file does not contain any other configuration you rely on):
+
+       ```sh
+       sudo rm /etc/NetworkManager/conf.d/99-cloud-init.conf
+       ```
+
+     - **Or** edit it and either:
+       - change `dns=none` to `dns=default`, or
+       - comment out or remove the `dns=` line entirely.
+
+  3. Restart NetworkManager:
+
+     ```sh
+     sudo systemctl restart NetworkManager
+     ```
+
+  4. Change DNS servers for the relevant connection using your usual method (for example, `nmtui`, a GUI tool, or `nmcli`) and re‑apply the connection.
+
+  5. Confirm that `/etc/resolv.conf` is now updated when you change DNS in NetworkManager:
+
+     ```sh
+     cat /etc/resolv.conf
+     ```
+
+  After these adjustments, `/etc/resolv.conf` should once again be managed by NetworkManager on that VM, and subsequent DNS changes through NetworkManager will be reflected in name resolution.
+
+  > **Note:** This behavior (creation and contents of `99-cloud-init.conf`, and the fact that `/etc/resolv.conf` is a regular file) was observed with the RHEL 9.6 + cloud-init packages used while developing this kit. Other RHEL releases or other distributions may behave differently. In some environments, you may also have to control whether `/etc/resolv.conf` is a symbolic link (for example to `/run/systemd/resolve/stub-resolv.conf` or `/run/NetworkManager/resolv.conf`).
 
 ---
 
