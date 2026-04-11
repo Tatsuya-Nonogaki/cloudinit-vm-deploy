@@ -117,6 +117,8 @@ $connRetryInterval = 5
 
 $vaultDefault = "VMwareSecretStore"
 
+# ----
+
 $viConnectPath = Join-Path $scriptdir 'VIConnect.ps1'
 if (-not (Test-Path $viConnectPath)) {
     Write-Host "Error: Cannot read function library file '$viConnectPath'" -ForegroundColor Red
@@ -212,8 +214,6 @@ function ConvertToSecureStringFromPlain {
         return $null
     }
 }
-
-
 
 # ---- Get-VM with short retries to tolerate transient vCenter/API glitches ----
 function TryGet-VMObject {
@@ -2112,4 +2112,3 @@ foreach ($p in $phaseSorted) {
 }
 
 Write-Log "Deployment script completed."
-
