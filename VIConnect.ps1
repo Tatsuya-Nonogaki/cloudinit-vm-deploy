@@ -1,7 +1,7 @@
 <#
  .DESCRIPTION
   Function library to connect to vSphere vCenter Server.
-  Version: 1.1
+  Version: 1.2
 
   Requirements:
     The parent script must define variables such as
