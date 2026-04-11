@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.2.0
+  Version: 0.3.0
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -49,6 +49,16 @@
   (Alias -noreset) If set, disables creation of /etc/cloud/cloud-init.disabled in Phase 4.
   ISO detachment and ISO file removal are always performed.
 
+.PARAMETER Legacy
+  If set, uses legacy VICredentialStore mode for vCenter authentication instead of the default
+  SecretStore/VISecret mode.
+  Instead of specifying this switch on every run, you can set $useLegacy = $true near the top
+  of the script to use legacy mode by default.
+
+.PARAMETER UpdatePassword
+  If set, saves or updates the vCenter credential in the credential store (SecretStore/VISecret
+  in modern mode, or VICredentialStore in legacy mode) after a successful interactive login.
+
 .EXAMPLE
   .\cloudinit-linux-vm-deploy.ps1 -Phase 1,2,3 -Config .\params\vm-settings_myvm01.yaml
 #>
@@ -71,7 +81,13 @@ param(
 
     [Parameter()]
     [Alias("noreset")]
-    [switch]$NoCloudReset
+    [switch]$NoCloudReset,
+
+    [Parameter()]
+    [switch]$Legacy,
+
+    [Parameter()]
+    [switch]$UpdatePassword
 )
 
 #
@@ -88,6 +104,10 @@ $workDirOnVM = "/run/cloudinit-vm-deploy"
 $vcport = 443
 $connRetry = 2
 $connRetryInterval = 5
+$vaultDefault = "VMwareSecretStore"
+
+# Load shared vCenter connection library
+. (Join-Path $scriptdir "VIConnect.ps1")
 
 if (-not (Test-Path $spooldir)) {
     Write-Host "Error: $spooldir does not exist. Please create it before running this script." -ForegroundColor Red
@@ -164,31 +184,6 @@ function ConvertToSecureStringFromPlain {
     }
 }
 
-function VIConnect {
-    # expects $vcserver, $vcuser, $vcpasswd in global scope
-    process {
-        for ($i = 1; $i -le $connRetry; $i++) {
-            try {
-                if ([string]::IsNullOrEmpty($vcuser) -or [string]::IsNullOrEmpty($vcpasswd)) {
-                    Write-Log "Connect-VIServer $vcserver -Port $vcport -Force"
-                    Connect-VIServer $vcserver -Port $vcport -Force -WarningAction SilentlyContinue -ErrorAction Continue -ErrorVariable myErr
-                } else {
-                    Write-Log "Connect-VIServer $vcserver -Port $vcport -User $vcuser -Password ******** -Force"
-                    Connect-VIServer $vcserver -Port $vcport -User $vcuser -Password $vcpasswd -Force -WarningAction SilentlyContinue -ErrorAction Continue -ErrorVariable myErr
-                }
-                if ($?) { break }
-            } catch {
-                Write-Log -Warn "Failed to connect (attempt $i): $_"
-            }
-            if ($i -eq $connRetry) {
-                Write-Log -Error "Connection attempts exceeded retry limit"
-                Exit 1
-            }
-            Write-Host "Waiting $connRetryInterval sec. before retry.." -ForegroundColor Yellow
-            Start-Sleep -Seconds $connRetryInterval
-        }
-    }
-}
 
 
 # ---- Get-VM with short retries to tolerate transient vCenter/API glitches ----
@@ -570,7 +565,25 @@ if (
 $vcserver = $params.vcenter_host
 $vcuser   = $params.vcenter_user
 $vcpasswd = $params.vcenter_password
-VIConnect
+
+# Optionally override Vault name from YAML
+if ($params.Keys -contains 'vicred_vault' -and -not [string]::IsNullOrEmpty($params.vicred_vault)) {
+    $vault = [string]$params.vicred_vault
+}
+
+# Export vault variables to the names expected by VIConnect.ps1 (PascalCase as used by the library)
+$VaultDefault = $vaultDefault
+if ($vault) { $Vault = $vault }
+
+# Resolve effective legacy mode ($useLegacy defaults to $false / modern mode)
+if (-not (Get-Variable -Name 'useLegacy' -Scope Script -ErrorAction SilentlyContinue)) {
+    $useLegacy = $false
+}
+if ($PSBoundParameters.ContainsKey('Legacy')) {
+    $useLegacy = [bool]$Legacy
+}
+
+if ($useLegacy) { VIConnectLegacy } else { VIConnect }
 
 # ---- Phase 1: Clone the VM Template to the target VM with specified spec ----
 function AutoClone {

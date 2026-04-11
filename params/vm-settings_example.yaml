@@ -2,10 +2,15 @@
 
 # == Infrastructure (vCenter Connection) ==
 # If vcenter_user/vcenter_password are blank or omitted,
-# the script will look for cached credentials via New-VICredentialStoreItem.
+# the script will look for cached credentials via SecretStore/VISecret (modern mode)
+# or VICredentialStore (legacy mode, when -Legacy switch is used).
 vcenter_host: vcenter01.backyard.local
 vcenter_user: administrator@vsphere.local   # Single Sign-On (SSO) user. Example: administrator@vsphere.local
 vcenter_password: "KenFiat50s^"             # SSO password. "" or omit to use credential store.
+# Credential store / vault settings (reference only):
+#vicred_legacy: false          # NOT used by script logic; corresponds conceptually to $useLegacy in the script (set via -Legacy switch or script default).
+#vicred_vault_default: VMwareSecretStore  # NOT used by script logic; the actual default Vault name is $vaultDefault in the script.
+#vicred_vault: VMwareSecretStore          # Optional: if set, overrides the Vault name used by VIConnect.ps1 (maps to $Vault).
 
 # == VM Hardware/Placement ==
 template_vm_name: rhel9-tpl
