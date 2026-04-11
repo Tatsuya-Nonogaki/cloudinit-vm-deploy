@@ -130,12 +130,25 @@ if (-not (Test-Path $spooldir)) {
     Exit 2
 }
 
-if (-Not (Get-Module VMware.VimAutomation.Core)) {
+if (-not (Get-Module VMware.VimAutomation.Core)) {
     Write-Host "Loading vSphere PowerCLI. This may take a while..."
-    Import-Module VMware.VimAutomation.Core -ErrorAction SilentlyContinue
+    try {
+        Import-Module VMware.VimAutomation.Core -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Error: Failed to load module VMware.VimAutomation.Core" -ForegroundColor Red
+        Exit 2
+    }
 }
 
-Import-Module powershell-yaml -ErrorAction Stop
+Write-Host "Loading module powershell-yaml"
+try {
+    Import-Module powershell-yaml -ErrorAction Stop
+}
+catch {
+    Write-Host "Error: Failed to load module powershell-yaml" -ForegroundColor Red
+    Exit 2
+}
 
 # ---- Phase argument check ----
 $phaseSorted = $Phase | Sort-Object
