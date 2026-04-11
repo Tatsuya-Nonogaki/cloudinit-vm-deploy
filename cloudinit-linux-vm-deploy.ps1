@@ -50,14 +50,18 @@
   ISO detachment and ISO file removal are always performed.
 
 .PARAMETER Legacy
-  If set, uses legacy VICredentialStore mode for vCenter authentication instead of the default
-  SecretStore/VISecret mode.
-  Instead of specifying this switch on every run, you can set $useLegacy = $true near the top
-  of the script to use legacy mode by default.
+  If specified and vcenter_password is not set in the parameter YAML file,
+  the script connects to vCenter using the legacy VICredentialStore mechanism.
+  Otherwise, the modern SecretStore / VISecret mode is used.
+  Instead of specifying this switch on every run, you can set the global $useLegacy variable
+  near the beginning of the script to $true to use legacy mode by default.
 
 .PARAMETER UpdatePassword
-  If set, saves or updates the vCenter credential in the credential store (SecretStore/VISecret
-  in modern mode, or VICredentialStore in legacy mode) after a successful interactive login.
+  In non-plain credential modes (SecretStore / VISecret or VICredentialStore),
+  if no valid credential is found, only on the first connection attempt of the run
+  the script will prompt you for the vCenter password.
+  If -UpdatePassword is also specified, the new credential will be saved
+  to the corresponding credential store upon successful connection.
 
 .EXAMPLE
   .\cloudinit-linux-vm-deploy.ps1 -Phase 1,2,3 -Config .\params\vm-settings_myvm01.yaml
@@ -104,10 +108,22 @@ $workDirOnVM = "/run/cloudinit-vm-deploy"
 $vcport = 443
 $connRetry = 2
 $connRetryInterval = 5
+
+# Global default for vCenter credential mode (when vcenter_password is not set in the parameter YAML):
+#   $true  = use legacy VICredentialStore by default
+#   $false = use modern SecretStore/VISecret by default
+# Uncomment and adjust this line if you want to change the global default.
+# $useLegacy = $true
+
 $vaultDefault = "VMwareSecretStore"
 
-# Load shared vCenter connection library
-. (Join-Path $scriptdir "VIConnect.ps1")
+$viConnectPath = Join-Path $scriptdir 'VIConnect.ps1'
+if (-not (Test-Path $viConnectPath)) {
+    Write-Host "Error: Cannot read function library file '$viConnectPath'" -ForegroundColor Red
+    Exit 2
+}
+Write-Host "Reading function library file '$viConnectPath'"
+. $viConnectPath
 
 if (-not (Test-Path $spooldir)) {
     Write-Host "Error: $spooldir does not exist. Please create it before running this script." -ForegroundColor Red
@@ -575,7 +591,7 @@ if ($params.Keys -contains 'vicred_vault' -and -not [string]::IsNullOrEmpty($par
 $VaultDefault = $vaultDefault
 if ($vault) { $Vault = $vault }
 
-# Resolve effective legacy mode ($useLegacy defaults to $false / modern mode)
+# Resolve Legacy mode between script global default and script switch
 if (-not (Get-Variable -Name 'useLegacy' -Scope Script -ErrorAction SilentlyContinue)) {
     $useLegacy = $false
 }
