@@ -650,6 +650,29 @@ function AutoClone {
         ErrorAction  = 'Stop'
     }
 
+    # Optional: VM folder placement
+    # If a valid vm_folder_name is provided in the parameter YAML, the VM is deployed into that folder;
+    # otherwise, it is created in the cluster root (New-VM default behavior).
+    if ($params.Keys -contains 'vm_folder_name' -and
+        -not [string]::IsNullOrEmpty([string]$params.vm_folder_name)) {
+
+        $vmFolderName = [string]$params.vm_folder_name
+        $folderCandidates = Get-Folder -Type VM -Name $vmFolderName -ErrorAction SilentlyContinue
+
+        if (-not $folderCandidates) {
+            Write-Log -Error "Specified VM folder not found: '$vmFolderName'. Please check 'vm_folder_name' in the parameter file."
+            Exit 2
+        }
+        $folderArray = @($folderCandidates)
+
+        if ($folderArray.Count -gt 1) {
+            Write-Log -Warn "Multiple VM folders named '$vmFolderName' were found. Using the first match: '$($folderArray[0].Name)'"
+        }
+
+        $vmFolder = $folderArray[0]
+        $vmParams['Location'] = $vmFolder
+    }
+
     if ($params.disk_format) {
         $vmParams['DiskStorageFormat'] = $params.disk_format
     }
@@ -679,12 +702,12 @@ function AutoClone {
         $newVMOut | Out-File $LogFilePath -Append -Encoding UTF8
         Write-Log "Deployed new VM: '$($newVM.Name)' from template: '$($templateVM.Name)' in datastore: '$($params.datastore_name)'"
         Write-Verbose @"
-VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`"
+VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`", VM Folder:`"$($vmFolder.Name)`"
 "@
     } catch {
         Write-Log -Error "Error occurred while deploying VM: '$new_vm_name': $_"
         Write-Verbose @"
-VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`"
+VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`", VM Folder:`"$($vmFolder.Name)`"
 "@
         Exit 1
     }
