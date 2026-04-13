@@ -1,11 +1,11 @@
 # Example vm-settings.yaml for cloudinit-linux-vm-deploy.ps1
 
 # == Infrastructure (vCenter Connection) ==
-# If vcenter_user/vcenter_password are blank or omitted,
+# If vcenter_password is blank or omitted,
 # the script will look for cached credentials via SecretStore/VISecret (modern mode)
 # or VICredentialStore (legacy mode, when -Legacy switch is used).
 vcenter_host: vcenter01.backyard.local
-vcenter_user: administrator@vsphere.local   # Single Sign-On (SSO) user. Example: administrator@vsphere.local
+vcenter_user: administrator@vsphere.local   # Single Sign-On (SSO) user. Required since cloudinit-linux-vm-deploy.ps1 v0.3.0. Example: administrator@vsphere.local
 vcenter_password: "KenFiat50s^"             # SSO password. "" or omit to use credential store.
 # Credential store / vault settings (reference only):
 #vicred_legacy: false          # NOT used by script logic; corresponds conceptually to $useLegacy in the script (set via -Legacy switch or script default).
