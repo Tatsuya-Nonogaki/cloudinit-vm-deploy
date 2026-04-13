@@ -21,6 +21,7 @@ datastore_name: ProdStore
 seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"   # Datastore and path where seed ISO will be copied temporarily, in a form "[store]<sp>path(/)"
 resource_pool_name: Resources   # If you are not sure, leave as "Resources" or comment out.
 esxi_host: vhost-a01
+vm_folder_name: ""              # Optional: vSphere VM folder name. Leave empty or omit to deploy onto the cluster root.
 ## Network port label; set either of the two (not both)
 #network_name: VM Network       # For standard switch
 dvs_portgroup: PROD_LAN01       # For Distributed Switch
@@ -102,4 +103,3 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 60      # Pause before the polling above starts; default:60
-
