@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.2.0
+  Version: 0.3.0
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -49,6 +49,20 @@
   (Alias -noreset) If set, disables creation of /etc/cloud/cloud-init.disabled in Phase 4.
   ISO detachment and ISO file removal are always performed.
 
+.PARAMETER Legacy
+  If specified and vcenter_password is not set in the parameter YAML file,
+  the script connects to vCenter using the legacy VICredentialStore mechanism.
+  Otherwise, the modern SecretStore / VISecret mode is used.
+  Instead of specifying this switch on every run, you can set the global $useLegacy variable
+  near the beginning of the script to $true to use legacy mode by default.
+
+.PARAMETER UpdatePassword
+  In non-plain credential modes (SecretStore / VISecret or VICredentialStore),
+  if no valid credential is found, only on the first connection attempt of the run
+  the script will prompt you for the vCenter password.
+  If -UpdatePassword is also specified, the new credential will be saved
+  to the corresponding credential store upon successful connection.
+
 .EXAMPLE
   .\cloudinit-linux-vm-deploy.ps1 -Phase 1,2,3 -Config .\params\vm-settings_myvm01.yaml
 #>
@@ -71,7 +85,13 @@ param(
 
     [Parameter()]
     [Alias("noreset")]
-    [switch]$NoCloudReset
+    [switch]$NoCloudReset,
+
+    [Parameter()]
+    [switch]$Legacy,
+
+    [Parameter()]
+    [switch]$UpdatePassword
 )
 
 #
@@ -89,17 +109,48 @@ $vcport = 443
 $connRetry = 2
 $connRetryInterval = 5
 
+# Global default for vCenter credential mode (when vcenter_password is not set in the parameter YAML):
+#   $true  = use legacy VICredentialStore by default
+#   $false = use modern SecretStore/VISecret by default
+# Uncomment and adjust this line if you want to change the global default.
+# $useLegacy = $true
+
+$vaultDefault = "VMwareSecretStore"
+
+# ----
+
+$viConnectPath = Join-Path $scriptdir 'VIConnect.ps1'
+if (-not (Test-Path $viConnectPath)) {
+    Write-Host "Error: Cannot read function library file '$viConnectPath'" -ForegroundColor Red
+    Exit 2
+}
+Write-Host "Reading function library file '$viConnectPath'"
+. $viConnectPath
+
 if (-not (Test-Path $spooldir)) {
     Write-Host "Error: $spooldir does not exist. Please create it before running this script." -ForegroundColor Red
     Exit 2
 }
 
-if (-Not (Get-Module VMware.VimAutomation.Core)) {
+if (-not (Get-Module VMware.VimAutomation.Core)) {
     Write-Host "Loading vSphere PowerCLI. This may take a while..."
-    Import-Module VMware.VimAutomation.Core -ErrorAction SilentlyContinue
+    try {
+        Import-Module VMware.VimAutomation.Core -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Error: Failed to load module VMware.VimAutomation.Core" -ForegroundColor Red
+        Exit 2
+    }
 }
 
-Import-Module powershell-yaml -ErrorAction Stop
+Write-Host "Loading module powershell-yaml"
+try {
+    Import-Module powershell-yaml -ErrorAction Stop
+}
+catch {
+    Write-Host "Error: Failed to load module powershell-yaml" -ForegroundColor Red
+    Exit 2
+}
 
 # ---- Phase argument check ----
 $phaseSorted = $Phase | Sort-Object
@@ -163,33 +214,6 @@ function ConvertToSecureStringFromPlain {
         return $null
     }
 }
-
-function VIConnect {
-    # expects $vcserver, $vcuser, $vcpasswd in global scope
-    process {
-        for ($i = 1; $i -le $connRetry; $i++) {
-            try {
-                if ([string]::IsNullOrEmpty($vcuser) -or [string]::IsNullOrEmpty($vcpasswd)) {
-                    Write-Log "Connect-VIServer $vcserver -Port $vcport -Force"
-                    Connect-VIServer $vcserver -Port $vcport -Force -WarningAction SilentlyContinue -ErrorAction Continue -ErrorVariable myErr
-                } else {
-                    Write-Log "Connect-VIServer $vcserver -Port $vcport -User $vcuser -Password ******** -Force"
-                    Connect-VIServer $vcserver -Port $vcport -User $vcuser -Password $vcpasswd -Force -WarningAction SilentlyContinue -ErrorAction Continue -ErrorVariable myErr
-                }
-                if ($?) { break }
-            } catch {
-                Write-Log -Warn "Failed to connect (attempt $i): $_"
-            }
-            if ($i -eq $connRetry) {
-                Write-Log -Error "Connection attempts exceeded retry limit"
-                Exit 1
-            }
-            Write-Host "Waiting $connRetryInterval sec. before retry.." -ForegroundColor Yellow
-            Start-Sleep -Seconds $connRetryInterval
-        }
-    }
-}
-
 
 # ---- Get-VM with short retries to tolerate transient vCenter/API glitches ----
 function TryGet-VMObject {
@@ -570,7 +594,25 @@ if (
 $vcserver = $params.vcenter_host
 $vcuser   = $params.vcenter_user
 $vcpasswd = $params.vcenter_password
-VIConnect
+
+# Optionally override Vault name from YAML
+if ($params.Keys -contains 'vicred_vault' -and -not [string]::IsNullOrEmpty($params.vicred_vault)) {
+    $vault = [string]$params.vicred_vault
+}
+
+# Export vault variables to the names expected by VIConnect.ps1 (PascalCase as used by the library)
+$VaultDefault = $vaultDefault
+if ($vault) { $Vault = $vault }
+
+# Resolve Legacy mode between script global default and script switch
+if (-not (Get-Variable -Name 'useLegacy' -Scope Script -ErrorAction SilentlyContinue)) {
+    $useLegacy = $false
+}
+if ($PSBoundParameters.ContainsKey('Legacy')) {
+    $useLegacy = [bool]$Legacy
+}
+
+if ($useLegacy) { VIConnectLegacy } else { VIConnect }
 
 # ---- Phase 1: Clone the VM Template to the target VM with specified spec ----
 function AutoClone {
@@ -608,6 +650,29 @@ function AutoClone {
         ErrorAction  = 'Stop'
     }
 
+    # Optional: VM folder placement
+    # If a valid vm_folder_name is provided in the parameter YAML, the VM is deployed into that folder;
+    # otherwise, it is created in the cluster root (New-VM default behavior).
+    if ($params.Keys -contains 'vm_folder_name' -and
+        -not [string]::IsNullOrEmpty([string]$params.vm_folder_name)) {
+
+        $vmFolderName = [string]$params.vm_folder_name
+        $folderCandidates = Get-Folder -Type VM -Name $vmFolderName -ErrorAction SilentlyContinue
+
+        if (-not $folderCandidates) {
+            Write-Log -Error "Specified VM folder not found: '$vmFolderName'. Please check 'vm_folder_name' in the parameter file."
+            Exit 2
+        }
+        $folderArray = @($folderCandidates)
+
+        if ($folderArray.Count -gt 1) {
+            Write-Log -Warn "Multiple VM folders named '$vmFolderName' were found. Using the first match: '$($folderArray[0].Name)'"
+        }
+
+        $vmFolder = $folderArray[0]
+        $vmParams['Location'] = $vmFolder
+    }
+
     if ($params.disk_format) {
         $vmParams['DiskStorageFormat'] = $params.disk_format
     }
@@ -637,12 +702,12 @@ function AutoClone {
         $newVMOut | Out-File $LogFilePath -Append -Encoding UTF8
         Write-Log "Deployed new VM: '$($newVM.Name)' from template: '$($templateVM.Name)' in datastore: '$($params.datastore_name)'"
         Write-Verbose @"
-VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`"
+VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`", VM Folder:`"$($vmFolder.Name)`"
 "@
     } catch {
         Write-Log -Error "Error occurred while deploying VM: '$new_vm_name': $_"
         Write-Verbose @"
-VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`"
+VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vmParams['Datastore'])`", ESXi-host:`"$($vmParams['VMHost'])`", DiskStorageFormat:`"$($vmParams['DiskStorageFormat'])`", ResourcePool:`"$($resourcePool.Name)`", VM Folder:`"$($vmFolder.Name)`"
 "@
         Exit 1
     }
@@ -2070,4 +2135,3 @@ foreach ($p in $phaseSorted) {
 }
 
 Write-Log "Deployment script completed."
-
