@@ -30,6 +30,11 @@ Between `cloudinit-linux-vm-deploy.ps1` versions **0.1.5** and **0.1.7**, update
 
 See [UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md](UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md) in this directory for detailed notes and examples.
 
+🆕 **Note (since v0.3.0):**
+
+- The `vcenter_user` field in `params/vm-settings_*.yaml` is now required.  
+  When `vcenter_password` is blank or omitted, the script relies on a [credential store](#admin-host-powershell-environment--windows-is-the-primary-target) but still needs an explicit `vcenter_user` to resolve and cache credentials correctly.
+
 ---
 
 📑 **Table of contents**
@@ -71,6 +76,7 @@ But note there is an exception; the optional [DiskOnly Reapply Mode](#-diskonly-
 ## 📁 Key Files
 
 - `cloudinit-linux-vm-deploy.ps1` — main PowerShell deployment script (implements Phases 1–4)  
+- `VIConnect.ps1` — shared vCenter connection library used by this kit (and other scripts) to centralize and support plain password, SecretStore/VISecret, and legacy VICredentialStore connection modes.  
 - `params/vm-settings_example.yaml` — example parameter file (copy and edit per VM)  
 - `templates/original/*_template.yaml` — cloud-init `user-data`, `meta-data`, and `network-config` templates (copy to `templates/` and edit as needed)  
 - `scripts/init-vm-cloudinit.sh` — script copied to the clone and run in Phase 2 to clear template artifacts and re-enable cloud-init on the clone  
@@ -85,11 +91,59 @@ But note there is an exception; the optional [DiskOnly Reapply Mode](#-diskonly-
 ## 🛠️ Requirements / Pre-setup
 
 ### Admin host (PowerShell environment — Windows is the primary target):
-- Windows PowerShell (5.1+) or PowerShell Core on Windows  
+- Windows PowerShell 5.1+ or PowerShell 7.5+ on Windows  
 - VMware PowerCLI (e.g., VMware.VimAutomation.Core)  
 - `powershell-yaml` module for YAML parsing  
-- ISO creation tool: Win32 `mkisofs.exe` (the script defaults to a Win32 mkisofs from cdrtfe). Adjust `$mkisofs` and `$mkArgs` in the script if you use a different tool.  
+- ISO creation tool: Win32 `mkisofs.exe` (the script defaults to a Win32 mkisofs from [**cdrtfe**](#-references)). Adjust `$mkisofs` and `$mkArgs` in the script if you use a different tool.  
 - Clone or unzip this repository on the admin host. The repo contains a `spool/` directory (dummy file present), which the script expects to exist.
+
+🔑 **vCenter credentials and PowerShell versions**
+
+This kit uses a shared connection library (`VIConnect.ps1`) to support multiple credential modes and both Windows PowerShell 5.1+ and PowerShell 7.x on Windows. In all cases:
+
+- `vcenter_host` and `vcenter_user` (since `cloudinit-linux-vm-deploy.ps1` v0.3.0) in `params/vm-settings_*.yaml` are **required**.  
+- `vcenter_password` is **optional**; if it is blank or omitted, the script uses a credential store instead of a plain password.
+
+At a high level, you can choose among:
+
+- **Plain password mode**
+  - Put `vcenter_password` directly in the parameter YAML.
+  - The script connects with `Connect-VIServer -Password` using that value.
+  - Easiest to get started with, but not recommended for long‑term production use because the password lives in clear text in YAML.
+
+- **Modern SecretStore / VISecret mode (recommended for new setups)**
+  - Leave `vcenter_password` empty or omit it in YAML.
+  - Install and configure:
+    - `Microsoft.PowerShell.SecretManagement`
+    - `Microsoft.PowerShell.SecretStore`
+    - [`VMware.VISecret`](#-references)
+  - Typical flow:
+    - Install the modules into a location that is visible from both Windows PowerShell 5.1 and PowerShell 7.x.  
+      On current Windows, a common choice is the shared all‑users module path:
+      - `"$env:ProgramFiles\WindowsPowerShell\Modules"`  
+      (this path is normally part of `$env:PSMODULEPATH` in both 5.1 and 7.x).
+    - In a PowerShell console, prepare a Vault (for example):
+      ```
+      Import-Module VMware.VISecret
+      Initialize-VISecret -Vault "VMwareSecretStore"
+      ```
+    - Run this kit; in non‑plain mode, when there is no valid stored credential for `vcenter_user@vcenter_host`, the script will prompt once for the password on the first connection attempt of the run.  
+      - Without `-UpdatePassword`, the password is used only for that run.  
+      - With `-UpdatePassword`, the password is also saved or updated in the SecretVault after a successful connection.  
+        Later runs can re‑use the stored secret without prompting, and you can explicitly refresh it by supplying `-UpdatePassword` again.
+
+- **Legacy VICredentialStore mode**
+  - Intended primarily for **Windows PowerShell 5.1 + classic PowerCLI** environments (for example on older Windows Server versions).
+  - Enabled per‑run with the `-Legacy` switch, or by setting the global `$useLegacy = $true` near the top of `cloudinit-linux-vm-deploy.ps1`.
+  - When `vcenter_password` is empty, the script uses the vSphere PowerCLI VICredentialStore cmdlets to read or update stored credentials:
+    - `-UpdatePassword` and first-atempt prompt work in the same way as modern SecretStore mode.
+
+In practice:
+
+- SecretStore / VISecret works well with **PowerShell 7.x on current Windows Server / Windows 10+**, and can also be used from Windows PowerShell 5.1 if the modules are installed on a shared module path.  
+- Legacy VICredentialStore is most predictable on **Windows PowerShell 5.1 with classic PowerCLI**; some newer combinations (for example PowerShell 7.x on recent Windows Server versions) may still work, but are not the primary target.
+
+📝 This README does not attempt to be a full HOWTO for SecretManagement or VISecret; refer to the official documentation of those modules.
 
 ### Template VM (example: RHEL9):
 - This kit assumes the template is a well-prepared VM that you have tailored as a base for cloning (this kit does not provide one).  
@@ -461,6 +515,7 @@ Always test in a non-production environment first (use VM snapshots). See the ge
 - [VMware PowerCLI](https://developer.vmware.com/powercli)
 - [powershell-yaml](https://github.com/cloudbase/powershell-yaml)
 - [cdrtfe (mkisofs win32)](https://sourceforge.net/projects/cdrtfe/)
+- [PowerCLI-Example-Scripts (VMware.VISecret)](https://github.com/vmware-archive/PowerCLI-Example-Scripts)
 
 ---
 
