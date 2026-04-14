@@ -1,9 +1,16 @@
 # Example vm-settings.yaml for cloudinit-linux-vm-deploy.ps1 : for disk-only reapplication
 
 # == Infrastructure (vCenter Connection) ==
+# If vcenter_password is blank or omitted,
+# the script will look for cached credentials via SecretStore/VISecret (modern mode)
+# or VICredentialStore (legacy mode, when -Legacy switch is used).
 vcenter_host: vcenter01.backyard.local
-vcenter_user: administrator@vsphere.local
-vcenter_password: "Secret123!"
+vcenter_user: administrator@vsphere.local   # Single Sign-On (SSO) user. Required since cloudinit-linux-vm-deploy.ps1 v0.3.0. Example: administrator@vsphere.local
+vcenter_password: "KenFiat50s^"             # SSO password. "" or omit to use credential store.
+# Credential store / vault settings (reference only):
+#vicred_legacy: false          # NOT used by script logic; corresponds conceptually to $useLegacy in the script (set via -Legacy switch or script default).
+#vicred_vault_default: VMwareSecretStore  # NOT used by script logic; the actual default Vault name is $vaultDefault in the script.
+#vicred_vault: VMwareSecretStore          # Optional: if set, overrides the Vault name used by VIConnect.ps1 (maps to $Vault).
 
 # == Target VM/Placement  (must exist already) ==
 new_vm_name: original01
@@ -39,4 +46,3 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 45      # Pause before the polling above starts; default:60
-
