@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.0
+  Version: 0.3.1
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -754,7 +754,7 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
         try {
             $vmHardDisks = @(Get-HardDisk -VM $newVM -ErrorAction Stop)
         } catch {
-            Write-Log -Error "Failed to retrieve hard disks from VM '$new_vm_name': $_"
+            Write-Log -Error "Failed to retrieve hard disk information from VM '$new_vm_name': $_"
             Exit 1
         }
 
@@ -784,7 +784,7 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
 
             $newGb = To-DoubleOrNull $d['size_gb']
             if ($null -eq $newGb -or $newGb -le 0) {
-                Write-Log -Error "Invalid disk size in config for '$($disk.Name)' on VM '$new_vm_name': size_gb='$($d['size_gb'])' (must be a positive numeric value; dot '.' decimal, locale-independent). Aborting."
+                Write-Log -Error "Invalid disk size in config for '$($disk.Name)': size_gb='$($d['size_gb'])'. Aborting."
                 Exit 3
             }
 
@@ -796,12 +796,18 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
                     Start-Sleep -Seconds 2
 
                     # Optional debug-only verification:
-                    # $appliedDisk = Get-HardDisk -VM $newVM -ErrorAction Stop | Where-Object { $_.Name -eq $disk.Name }
-                    # if ($appliedDisk) {
-                    #     Write-Log "Resize verification for '$($disk.Name)': AppliedGB=$($appliedDisk.CapacityGB)"
-                    # }
+                    if ($VerbosePreference -ne 'SilentlyContinue') {
+                        try {
+                            $diskAfter = @(Get-HardDisk -VM $newVM -ErrorAction Stop | Where-Object { $_.Name -eq $diskName })
+                            if ($diskAfter) {
+                                Write-Log "Resized disk '$($disk.Name)': AppliedGB=$([double]$diskAfter.CapacityGB)"
+                            }
+                        } catch {
+                            Write-Log -Warn "Failed to re-fetch disk after resize for '$($disk.Name)': $_"
+                        }
+                    }
                 } catch {
-                    Write-Log -Error "Error resizing disk '$($d['name'])': $_"
+                    Write-Log -Error "Error occurred while resizing disk '$($d['name'])': $_"
                     Exit 1
                 }
             } else {
