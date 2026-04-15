@@ -235,7 +235,7 @@ function To-DoubleOrNull {
     }
 
     $d = 0.0
-    if ([double]::TryParse($s, [Globalization.NumberStyles]::AllowDecimalPoint, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+    if ([double]::TryParse($s, ([Globalization.NumberStyles]::AllowLeadingSign -bor [Globalization.NumberStyles]::AllowDecimalPoint), [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
         return $d
     }
 
@@ -784,7 +784,7 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
 
             $newGb = To-DoubleOrNull $d['size_gb']
             if ($null -eq $newGb -or $newGb -le 0) {
-                Write-Log -Error "Invalid disk size in config for '$($disk.Name)' on VM '$new_vm_name': size_gb='$($d['size_gb'])' (must be a positive number using '.' decimal). Aborting."
+                Write-Log -Error "Invalid disk size in config for '$($disk.Name)' on VM '$new_vm_name': size_gb='$($d['size_gb'])' (must be a positive numeric value; dot '.' decimal, locale-independent). Aborting."
                 Exit 3
             }
 
