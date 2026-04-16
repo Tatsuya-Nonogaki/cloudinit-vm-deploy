@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.1
+  Version: 0.3.2
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -234,8 +234,19 @@ function To-DoubleOrNull {
         return $null
     }
 
+    # Accept only plain decimal numbers (no exponent, no commas):
+    #   17, 0.7, .7, 17.0, -0.7, +0.7
+    if ($s -notmatch '^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$') {
+        return $null
+    }
+
     $d = 0.0
-    if ([double]::TryParse($s, ([Globalization.NumberStyles]::AllowLeadingSign -bor [Globalization.NumberStyles]::AllowDecimalPoint), [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+    if ([double]::TryParse(
+            $s,
+            ([Globalization.NumberStyles]::AllowLeadingSign -bor [Globalization.NumberStyles]::AllowDecimalPoint),
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$d
+        )) {
         return $d
     }
 
@@ -798,7 +809,7 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
                     # Optional debug-only verification:
                     if ($VerbosePreference -ne 'SilentlyContinue') {
                         try {
-                            $diskAfter = @(Get-HardDisk -VM $newVM -ErrorAction Stop | Where-Object { $_.Name -eq $diskName })
+                            $diskAfter = @(Get-HardDisk -VM $newVM -ErrorAction Stop | Where-Object { $_.Name -eq $d['name'] }) | Select-Object -First 1
                             if ($diskAfter) {
                                 Write-Log "Resized disk '$($disk.Name)': AppliedGB=$([double]$diskAfter.CapacityGB)"
                             }
