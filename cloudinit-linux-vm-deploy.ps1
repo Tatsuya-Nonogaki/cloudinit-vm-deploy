@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.0
+  Version: 0.3.2
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -213,6 +213,44 @@ function ConvertToSecureStringFromPlain {
         Write-Log -Error "ConvertToSecureStringFromPlain: ConvertTo-SecureString failed: $_"
         return $null
     }
+}
+
+function To-DoubleOrNull {
+    param(
+        [Parameter()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) {
+        return [double]$Value
+    }
+
+    $s = $Value.ToString().Trim()
+    if ($s.Length -eq 0) {
+        return $null
+    }
+
+    # Accept only plain decimal numbers (no exponent, no commas):
+    #   17, 0.7, .7, 17.0, -0.7, +0.7
+    if ($s -notmatch '^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$') {
+        return $null
+    }
+
+    $d = 0.0
+    if ([double]::TryParse(
+            $s,
+            ([Globalization.NumberStyles]::AllowLeadingSign -bor [Globalization.NumberStyles]::AllowDecimalPoint),
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$d
+        )) {
+        return $d
+    }
+
+    return $null
 }
 
 # ---- Get-VM with short retries to tolerate transient vCenter/API glitches ----
@@ -724,28 +762,67 @@ VM:`"$($vmParams['Name'])`", Template:`"$($templateVM.Name)`", Datastore:`"$($vm
 
     # Disks
     if ($params.disks) {
+        try {
+            $vmHardDisks = @(Get-HardDisk -VM $newVM -ErrorAction Stop)
+        } catch {
+            Write-Log -Error "Failed to retrieve hard disk information from VM '$new_vm_name': $_"
+            Exit 1
+        }
+
         foreach ($d in $params.disks) {
-            if ($d.ContainsKey('name') -and $d.ContainsKey('size_gb')) {
-                $disk = Get-HardDisk -VM $newVM | Where-Object { $_.Name -eq $d['name'] }
+            if (-not ($d.ContainsKey('name') -and $d.ContainsKey('size_gb'))) {
+                Write-Log -Error "Invalid disk config entry (missing 'name' or 'size_gb'): $($d | Out-String)"
+                Exit 3
+            }
 
-                if (-not $disk) {
-                    Write-Log -Error "Disk named '$($d['name'])' not found on VM '$new_vm_name'. Aborting."
-                    Exit 3
-                }
+            $diskMatches = @($vmHardDisks | Where-Object { $_.Name -eq $d['name'] })
+            if ($diskMatches.Count -eq 0) {
+                Write-Log -Error "Disk named '$($d['name'])' not found on VM '$new_vm_name'. Aborting."
+                Exit 3
+            }
+            if ($diskMatches.Count -gt 1) {
+                Write-Log -Error "Disk name '$($d['name'])' is ambiguous on VM '$new_vm_name' (matches: $($diskMatches.Count)). Aborting."
+                Exit 3
+            }
+            $disk = $diskMatches[0]
 
-                if ($disk.CapacityGB -lt $d['size_gb']) {
-                    try {
-                        Set-HardDisk -HardDisk $disk -CapacityGB $d['size_gb'] -Confirm:$false |
-                          Tee-Object -Variable setHDOut | Out-File $LogFilePath -Append -Encoding UTF8
-                        Start-Sleep -Seconds 2
-                        Write-Log "Resized disk '$($disk.Name)' to $($d['size_gb']) GB"
-                    } catch {
-                        Write-Log -Error "Error resizing disk '$($d['name'])': $_"
-                        Exit 1
+            try {
+                $oldGb = [double]$disk.CapacityGB
+            } catch {
+                Write-Log -Error "System error: HardDisk CapacityGB is not numeric for '$($disk.Name)' on VM '$new_vm_name': '$($disk.CapacityGB)'. $_"
+                Exit 1
+            }
+
+            $newGb = To-DoubleOrNull $d['size_gb']
+            if ($null -eq $newGb -or $newGb -le 0) {
+                Write-Log -Error "Invalid disk size in config for '$($disk.Name)': size_gb='$($d['size_gb'])'. Aborting."
+                Exit 3
+            }
+
+            if ($oldGb -lt $newGb) {
+                try {
+                    Set-HardDisk -HardDisk $disk -CapacityGB $newGb -Confirm:$false |
+                      Tee-Object -Variable setHDOut | Out-File $LogFilePath -Append -Encoding UTF8
+                    Write-Log "Resized disk '$($disk.Name)': OldGB=$oldGb NewGB=$newGb"
+                    Start-Sleep -Seconds 2
+
+                    # Optional debug-only verification:
+                    if ($VerbosePreference -ne 'SilentlyContinue') {
+                        try {
+                            $diskAfter = @(Get-HardDisk -VM $newVM -ErrorAction Stop | Where-Object { $_.Name -eq $d['name'] }) | Select-Object -First 1
+                            if ($diskAfter) {
+                                Write-Log "Resized disk '$($disk.Name)': AppliedGB=$([double]$diskAfter.CapacityGB)"
+                            }
+                        } catch {
+                            Write-Log -Warn "Failed to re-fetch disk after resize for '$($disk.Name)': $_"
+                        }
                     }
+                } catch {
+                    Write-Log -Error "Error occurred while resizing disk '$($d['name'])': $_"
+                    Exit 1
                 }
             } else {
-                Write-Log -Warn "Skipping disk entry missing 'name' or 'size_gb': $($d | Out-String)"
+                Write-Log "No need to resize disk '$($disk.Name)': OldGB=$oldGb NewGB=$newGb"
             }
         }
     }
