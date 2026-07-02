@@ -11,21 +11,21 @@ vcenter_host: vcenter01.backyard.local
 #  - For better compatibility with legacy VICredentialStore environments, using lowercase is recommended.
 vcenter_user: administrator@vsphere.local
 vcenter_password: "KenFiat50s^"             # SSO password. "" or omit to use credential store.
-# Credential store / vault settings (reference only):
-#vicred_legacy: false          # NOT used by script logic; corresponds conceptually to $useLegacy in the script (set via -Legacy switch or script default).
-#vicred_vault_default: VMwareSecretStore  # NOT used by script logic; the actual default Vault name is $vaultDefault in the script.
+# Credential store / vault settings:
+#vicred_legacy: false          # Reference only: corresponds conceptually to $useLegacy in the script (set via -Legacy switch or script default).
+#vicred_vault_default: VMwareSecretStore  # Reference only: the actual default Vault name is $vaultDefault in the script.
 #vicred_vault: VMwareSecretStore          # Optional: if set, overrides the Vault name used by VIConnect.ps1 (maps to $Vault).
 
 # == VM Hardware/Placement ==
 template_vm_name: rhel9-tpl
 new_vm_name: original01
 datacenter_name: VMDATACENTER
-cluster_name: CLST_A
+esxi_host: vhost-a01
+cluster_name: CLST_A            # Optional: leave empty if the destination ESXi host is standalone.
+resource_pool_name: ""          # Optional: if omitted or empty, the default Resource Pool "Resources" is assumed.
 datastore_name: ProdStore
 seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"   # Datastore and path where seed ISO will be copied temporarily, in a form "[store]<sp>path(/)"
-resource_pool_name: Resources   # If you are not sure, leave as "Resources" or comment out.
-esxi_host: vhost-a01
-vm_folder_name: ""              # Optional: vSphere VM folder name. Leave empty or omit to deploy onto the cluster root.
+vm_folder_name: ""              # Optional: vSphere VM folder name. Leave empty or omit to deploy onto the cluster or datacenter root.
 ## Network port label; set either of the two (not both)
 #network_name: VM Network       # For standard switch
 dvs_portgroup: PROD_LAN01       # For Distributed Switch
@@ -107,3 +107,4 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 60      # Pause before the polling above starts; default:60
+

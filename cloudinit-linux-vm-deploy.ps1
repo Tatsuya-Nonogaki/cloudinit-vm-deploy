@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.2
+  Version: 0.3.3
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -669,14 +669,32 @@ function AutoClone {
         Exit 3
     }
 
-    if ([string]::IsNullOrEmpty($params.resource_pool_name) -or $params.resource_pool_name -eq "Resources") {
-        $resourcePool = (Get-Cluster -Name $params.cluster_name | Get-ResourcePool | Where-Object { $_.Name -eq "Resources" })
-    } else {
-        $resourcePool = (Get-Cluster -Name $params.cluster_name | Get-ResourcePool | Where-Object { $_.Name -eq $params.resource_pool_name })
-        if (-not $resourcePool) {
-            Write-Log -Error "Specified Resource Pool not found: $($params.resource_pool_name)"
+    $resourcePoolName = $params.resource_pool_name
+    if ([string]::IsNullOrWhiteSpace($resourcePoolName)) {
+        $resourcePoolName = "Resources"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($params.cluster_name)) {
+        # Standalone ESXi: resolve from the host
+        $resourceParent = Get-VMHost -Name $params.esxi_host
+        if (-not $resourceParent) {
+            Write-Log -Error "Specified ESXi host not found: $($params.esxi_host)"
             Exit 3
         }
+    } else {
+        # Cluster-backed deployment
+        $resourceParent = Get-Cluster -Name $params.cluster_name
+        if (-not $resourceParent) {
+            Write-Log -Error "Specified cluster not found: $($params.cluster_name)"
+            Exit 3
+        }
+    }
+
+    $resourcePool = Get-ResourcePool -Location $resourceParent | Where-Object { $_.Name -eq $resourcePoolName }
+
+    if (-not $resourcePool) {
+        Write-Log -Error "Specified Resource Pool '$resourcePoolName' not found just below $($resourceParent.Name)"
+        Exit 3
     }
 
     $vmParams = @{
