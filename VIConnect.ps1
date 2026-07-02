@@ -1,7 +1,7 @@
 <#
  .DESCRIPTION
   Function library to connect to vSphere vCenter Server.
-  Version: 1.2
+  Version: 1.2.1 for cloudinit-vm-deploy
 
   Requirements:
     The parent script must define variables such as
@@ -281,18 +281,22 @@ Function VIConnectLegacy {
         Behavior:
           - If isPlainMode() returns $true (i.e. $vcpasswd is set), the function
             delegates to VIConnectPlain and returns.
-          - Otherwise, it tries to connect using existing VICredentialStore
-            entries for ($vcserver, $vcuser).
-          - On the first failure, it prompts for credentials, tries to connect,
-            and if the script global switch parameter 'UpdatePassword' is set and
-            the connection succeeds, updates or creates a VICredentialStore item
-            for future runs.
+          - Otherwise, it first checks whether a VICredentialStore entry exists
+            for ($vcserver, normalized $vcuser).
+          - If a stored credential exists, it uses that credential explicitly
+            to avoid PowerCLI's built-in credential prompt.
+          - If the stored credential is missing or unusable, it prompts for
+            credentials by using Get-Credential under script control.
+          - If the script global switch parameter 'UpdatePassword' is set and
+            the interactive connection succeeds, it updates or creates a
+            VICredentialStore item for future runs.
 
         Requirements:
           - the parent script must define at least:
               $vcserver, $vcport, $vcuser, $connRetry, $connRetryInterval
           - PowerCLI must be available (VMware.VimAutomation.Core), including
-            VICredentialStore cmdlets such as New-VICredentialStoreItem.
+            VICredentialStore cmdlets such as Get-VICredentialStoreItem and
+            New-VICredentialStoreItem.
     #>
     PROCESS {
         #---------------------------
@@ -317,6 +321,15 @@ Function VIConnectLegacy {
         }
 
         #---------------------------
+        # Normalize user name for VICredentialStore lookup/update
+        #---------------------------
+        $storeUser = $vcuser.ToLowerInvariant()
+
+        if ($storeUser -cne $vcuser) {
+            Write-Verbose "Normalizing VICredentialStore user name from '$vcuser' to '$storeUser' for legacy mode."
+        }
+
+        #---------------------------
         # VICredentialStore mode (no plain password)
         #---------------------------
         Write-Verbose "Using Legacy VICredentialStore mode."
@@ -324,70 +337,100 @@ Function VIConnectLegacy {
         for ($i = 1; $i -le $connRetry; $i++) {
 
             $connectionSucceeded = $false
+            $storedItem = $null
+            $useStoredCredential = $false
+            $needInteractiveCredential = $true
 
+            #---------------------------
+            # Check stored credential explicitly first
+            #---------------------------
             try {
-                if ($i -eq 1) {
-                    # First attempt: try to use an existing credential from the VICredentialStore
-                    Write-Output "Connect-VIServer $vcserver -Port $vcport -User $vcuser -Force (VICredentialStore)"
+                $storedItem = Get-VICredentialStoreItem -Host $vcserver -User $storeUser -ErrorAction Stop
+                if ($storedItem) {
+                    $useStoredCredential = $true
+                    Write-Verbose "A VICredentialStore entry was found for $storeUser / $vcserver."
                 }
-                else {
-                    Write-Output "Retrying Connect-VIServer $vcserver -Port $vcport -User $vcuser -Force (VICredentialStore, attempt $i)"
-                }
-
-                Connect-VIServer $vcserver -Port $vcport -User $vcuser -Force `
-                    -WarningAction SilentlyContinue -ErrorAction Stop
-                $connectionSucceeded = $true
             }
             catch {
-                if ($i -eq 1) {
-                    # On the first failure, fall back to interactive credential input
-                    Write-Warning "VICredentialStore-based connection as $vcserver for $vcuser failed or no stored credential was found."
-                    Write-Output "You may now enter the password for $vcuser at ${vcserver}"
+                Write-Verbose "No VICredentialStore entry was found for $storeUser / $vcserver."
+            }
+
+            #---------------------------
+            # First, try the stored credential if it exists
+            #---------------------------
+            if ($useStoredCredential) {
+                try {
+                    if ($i -eq 1) {
+                        Write-Output "Connect-VIServer $vcserver -Port $vcport -Credential <stored credential for $storeUser> -Force (VICredentialStore)"
+                    }
+                    else {
+                        Write-Output "Retrying Connect-VIServer $vcserver -Port $vcport -Credential <stored credential for $storeUser> -Force (VICredentialStore, attempt $i)"
+                    }
+
+                    $securePassword = ConvertTo-SecureString $storedItem.Password -AsPlainText -Force
+                    $storedCredential = New-Object System.Management.Automation.PSCredential ($storeUser, $securePassword)
+
+                    Connect-VIServer $vcserver -Port $vcport -Credential $storedCredential -Force `
+                        -WarningAction SilentlyContinue -ErrorAction Stop
+                    $connectionSucceeded = $true
+                    $needInteractiveCredential = $false
+                }
+                catch {
+                    Write-Warning "Stored VICredentialStore credential for $storeUser / ${vcserver} failed: $($_.Exception.Message)"
+                    Write-Warning "Falling back to interactive credential prompt."
+                    $needInteractiveCredential = $true
+                }
+            }
+
+            #---------------------------
+            # If no stored credential exists, or if it failed, prompt interactively
+            #---------------------------
+            if (-not $connectionSucceeded -and $needInteractiveCredential) {
+                Write-Output "You may now enter the password for $storeUser at ${vcserver}"
+                if ($UpdatePassword) {
+                    Write-Output "If the connection succeeds, it will be stored in the VICredentialStore for future runs."
+                }
+
+                $cred = Get-Credential -UserName $storeUser -Message "Enter password for $storeUser at $vcserver"
+                if (-not $cred) {
+                    Write-Warning "VICredentialStore-based connection failed (attempt $i): no password was provided at the prompt."
+                    if ($i -eq $connRetry) {
+                        Write-Output "Connection attempts exceeded retry limit (legacy mode)."
+                        Exit 32
+                    }
+                    Write-Output "Waiting $connRetryInterval seconds before retry (legacy mode)...`r`n"
+                    Start-Sleep -Seconds $connRetryInterval
+                    continue
+                }
+
+                try {
+                    Write-Output "Connect-VIServer $vcserver -Port $vcport -Credential **** -Force (interactive credential)"
+                    Connect-VIServer $vcserver -Port $vcport -Credential $cred -Force `
+                        -WarningAction SilentlyContinue -ErrorAction Stop
+                    $connectionSucceeded = $true
+                }
+                catch {
+                    Write-Warning "Initial connection with interactive credential failed: $($_.Exception.Message)"
+                }
+
+                if ($connectionSucceeded) {
                     if ($UpdatePassword) {
-                        Write-Output "If the connection succeeds, it will be stored in the VICredentialStore for future runs."
-                    }
-
-                    # Prompt for credentials
-                    $cred = Get-Credential -UserName $vcuser -Message "Enter password for $vcuser at $vcserver"
-                    if (-not $cred) {
-                        Write-Warning "VICredentialStore-based connection failed (attempt $i): no password was provided at the prompt."
-                        continue
-                    }
-
-                    # Try to connect once with the provided credential
-                    try {
-                        Write-Output "Connect-VIServer $vcserver -Port $vcport -User $vcuser -Force (interactive credential)"
-                        Connect-VIServer $vcserver -Port $vcport -Credential $cred -Force `
-                            -WarningAction SilentlyContinue -ErrorAction Stop
-                        $connectionSucceeded = $true
-                    }
-                    catch {
-                        Write-Warning "Initial connection with interactive credential failed: $($_.Exception.Message)"
-                    }
-
-                    # Only if the interactive connection succeeded, optionally update VICredentialStore
-                    if ($connectionSucceeded) {
-                        if ($UpdatePassword) {
-                            try {
-                                Write-Output "Updating VICredentialStore entry for $vcuser / $vcserver"
-                                New-VICredentialStoreItem -Host $vcserver -User $vcuser -Password ($cred.GetNetworkCredential().Password) `
-                                    -ErrorAction SilentlyContinue | Out-Null
-                                Write-Output "VICredentialStore entry for $vcuser / $vcserver has been updated successfully."
-                            }
-                            catch {
-                                Write-Warning "Failed to update VICredentialStore item for $vcuser / ${vcserver}: $($_.Exception.Message)"
-                            }
+                        try {
+                            Write-Output "Updating VICredentialStore entry for $storeUser / $vcserver"
+                            New-VICredentialStoreItem -Host $vcserver -User $storeUser -Password ($cred.GetNetworkCredential().Password) `
+                                -ErrorAction Stop | Out-Null
+                            Write-Output "VICredentialStore entry for $storeUser / $vcserver has been updated successfully."
                         }
-                        else {
-                            Write-Output "Interactive connection succeeded, but VICredentialStore will NOT be updated because -UpdatePassword was not specified."
+                        catch {
+                            Write-Warning "Failed to update VICredentialStore item for $storeUser / ${vcserver}: $($_.Exception.Message)"
                         }
                     }
                     else {
-                        Write-Warning "Skipping VICredentialStore update because the interactive connection did not succeed."
+                        Write-Output "Interactive connection succeeded, but VICredentialStore will NOT be updated because -UpdatePassword was not specified."
                     }
                 }
                 else {
-                    Write-Warning "VICredentialStore-based connection failed (attempt $i): $($_.Exception.Message)"
+                    Write-Warning "Skipping VICredentialStore update because the interactive connection did not succeed."
                 }
             }
 
