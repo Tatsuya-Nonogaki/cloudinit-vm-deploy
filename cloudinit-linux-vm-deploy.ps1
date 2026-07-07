@@ -262,7 +262,7 @@ function Resolve-PrimaryUserContext {
         if ($k -eq $primaryUserKey) { continue }
         $u = $Params[$k]
         if ($u -and -not [string]::IsNullOrWhiteSpace([string]$u.operation_password)) {
-            Write-Log -Warn "Ignoring ${k}.operation_password because only the primary user can use operation_password for guest operations."
+            Write-Log -Warn "Ignoring ${k}.operation_password because only the primary user ($primaryUserKey) can use operation_password for guest operations."
         }
     }
 
@@ -361,7 +361,8 @@ function Invoke-VMScriptWithCredFallback {
 
     $candidates = Get-GuestCredentialCandidates -PrimaryUserContext $PrimaryUserContext
     if ($candidates.Count -eq 0) {
-        throw "No guest credential candidates are available for Invoke-VMScript."
+        $vmName = if ($VM -and $VM.Name) { $VM.Name } else { [string]$VM }
+        throw "No guest credential candidates are available for Invoke-VMScript on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'."
     }
 
     $lastError = $null
@@ -405,7 +406,8 @@ function Copy-VMGuestFileWithCredFallback {
 
     $candidates = Get-GuestCredentialCandidates -PrimaryUserContext $PrimaryUserContext
     if ($candidates.Count -eq 0) {
-        throw "No guest credential candidates are available for Copy-VMGuestFile."
+        $vmName = if ($VM -and $VM.Name) { $VM.Name } else { [string]$VM }
+        throw "No guest credential candidates are available for Copy-VMGuestFile on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'."
     }
 
     $lastError = $null
