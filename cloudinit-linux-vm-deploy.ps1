@@ -230,7 +230,7 @@ function Get-OrderedUserKeys {
         Write-Verbose "Get-OrderedUserKeys: failed to enumerate user keys: $_"
         $userKeys = @()
     }
-    return @($userKeys)
+    return $userKeys
 }
 
 function Resolve-PrimaryUserContext {
@@ -291,7 +291,7 @@ function Resolve-PrimaryUserContext {
     }
 
     return @{
-        UserKeys = @($userKeys)
+        UserKeys = $userKeys
         PrimaryUserKey = $primaryUserKey
         PrimaryUser = $primaryUser
         GuestUserName = $guestUserName
@@ -320,11 +320,13 @@ function Get-GuestCredentialCandidates {
     Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
         -PlainText $PrimaryUserContext.FinalPassword -Source 'password'
 
-    return @($candidates)
+    return $candidates.ToArray()
 }
 
 function Add-GuestCredentialCandidate {
     param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [System.Collections.ArrayList]$Candidates,
         [Parameter(Mandatory)]
         [hashtable]$SeenPasswords,
@@ -456,7 +458,7 @@ function Assert-UserConfiguration {
         [string]$VmName
     )
 
-    $requiresGuestOperations = ($Phase -contains 2) -or ($Phase -contains 3) -or (($Phase -contains 4) -and -not $NoCloudReset)
+    $requiresGuestOperations = ($Phase -contains 2) -or ($Phase -contains 3) -or ($Phase -contains 4 -and -not $NoCloudReset)
     $requiresSeedUserFields = (-not $DiskOnly) -and ($Phase -contains 3)
     $requiresUserDefinitions = $requiresGuestOperations -or $requiresSeedUserFields
 
