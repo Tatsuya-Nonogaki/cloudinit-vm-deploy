@@ -311,6 +311,8 @@ function Get-GuestCredentialCandidates {
     $candidates = New-Object System.Collections.ArrayList
     $seenPasswords = @{}
 
+    # Candidate precedence is: cached successful credential, then operation_password, then final password.
+    # This lets Phase-3 continue across the point where cloud-init changes the primary user's password.
     Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
         -PlainText $PrimaryUserContext.SuccessfulGuestPassword -Source 'cached'
     Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
@@ -362,7 +364,7 @@ function Invoke-VMScriptWithCredFallback {
     $candidates = Get-GuestCredentialCandidates -PrimaryUserContext $PrimaryUserContext
     if ($candidates.Count -eq 0) {
         $vmName = if ($VM -and $VM.Name) { $VM.Name } else { [string]$VM }
-        throw "No guest credential candidates are available for Invoke-VMScript on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'."
+        throw "No guest credential candidates are available for Invoke-VMScript on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'. Ensure the primary user defines either operation_password or password in the parameter file."
     }
 
     $lastError = $null
@@ -407,7 +409,7 @@ function Copy-VMGuestFileWithCredFallback {
     $candidates = Get-GuestCredentialCandidates -PrimaryUserContext $PrimaryUserContext
     if ($candidates.Count -eq 0) {
         $vmName = if ($VM -and $VM.Name) { $VM.Name } else { [string]$VM }
-        throw "No guest credential candidates are available for Copy-VMGuestFile on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'."
+        throw "No guest credential candidates are available for Copy-VMGuestFile on VM '$vmName' for user '$($PrimaryUserContext.GuestUserName)'. Ensure the primary user defines either operation_password or password in the parameter file."
     }
 
     $lastError = $null
@@ -474,7 +476,7 @@ function Assert-UserConfiguration {
     }
 
     if ($requiresGuestOperations -and [string]::IsNullOrWhiteSpace($PrimaryUserContext.OperationPassword)) {
-        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define at least one guest-operation password field (operation_password or password). Aborting deployment."
+        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define at least one guest operation password field (operation_password or password). Aborting deployment."
         Exit 3
     }
 
