@@ -227,6 +227,7 @@ function Get-OrderedUserKeys {
             $userKeys = $Params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
         }
     } catch {
+        Write-Verbose "Get-OrderedUserKeys: failed to enumerate user keys: $_"
         $userKeys = @()
     }
     return @($userKeys)
@@ -310,37 +311,43 @@ function Get-GuestCredentialCandidates {
     $candidates = New-Object System.Collections.ArrayList
     $seenPasswords = @{}
 
-    function Add-Candidate {
-        param(
-            [string]$PlainText,
-            [string]$Source
-        )
-
-        if ([string]::IsNullOrWhiteSpace($PlainText)) {
-            return
-        }
-        if ($seenPasswords.ContainsKey($PlainText)) {
-            return
-        }
-
-        $secure = ConvertToSecureStringFromPlain $PlainText
-        if (-not $secure) {
-            return
-        }
-
-        [void]$candidates.Add(@{
-            PlainText = $PlainText
-            SecureString = $secure
-            Source = $Source
-        })
-        $seenPasswords[$PlainText] = $true
-    }
-
-    Add-Candidate -PlainText $PrimaryUserContext.SuccessfulGuestPassword -Source 'cached'
-    Add-Candidate -PlainText $PrimaryUserContext.OperationPassword -Source 'operation_password'
-    Add-Candidate -PlainText $PrimaryUserContext.FinalPassword -Source 'password'
+    Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
+        -PlainText $PrimaryUserContext.SuccessfulGuestPassword -Source 'cached'
+    Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
+        -PlainText $PrimaryUserContext.OperationPassword -Source 'operation_password'
+    Add-GuestCredentialCandidate -Candidates $candidates -SeenPasswords $seenPasswords `
+        -PlainText $PrimaryUserContext.FinalPassword -Source 'password'
 
     return @($candidates)
+}
+
+function Add-GuestCredentialCandidate {
+    param(
+        [System.Collections.ArrayList]$Candidates,
+        [Parameter(Mandatory)]
+        [hashtable]$SeenPasswords,
+        [string]$PlainText,
+        [string]$Source
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PlainText)) {
+        return
+    }
+    if ($SeenPasswords.ContainsKey($PlainText)) {
+        return
+    }
+
+    $secure = ConvertToSecureStringFromPlain $PlainText
+    if (-not $secure) {
+        return
+    }
+
+    [void]$Candidates.Add(@{
+        PlainText = $PlainText
+        SecureString = $secure
+        Source = $Source
+    })
+    $SeenPasswords[$PlainText] = $true
 }
 
 function Invoke-VMScriptWithCredFallback {
@@ -465,7 +472,7 @@ function Assert-UserConfiguration {
     }
 
     if ($requiresGuestOperations -and [string]::IsNullOrWhiteSpace($PrimaryUserContext.OperationPassword)) {
-        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define operation_password or password for guest operations. Aborting deployment."
+        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define at least one guest-operation password field (operation_password or password). Aborting deployment."
         Exit 3
     }
 
