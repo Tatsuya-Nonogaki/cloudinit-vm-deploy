@@ -11,6 +11,7 @@
 # - The VM template's primary user must be a real, login-capable administrative account. This means the account can perform an interactive (local-equivalent) login via the VM console and must not be locked.
 # - Do NOT set `lock_passwd: true` (i.e., do not disable the primary user's password or make the template user SSH-only). VMware Tools guest operations (Invoke-VMScript and similar guest API guest operations) rely on password-based authentication and will not work with a password-disabled primary user.
 # - The primary user must be able to run at least `sudo /bin/bash` without being prompted for a password. Configure sudoers accordingly, for example, an appropriate `NOPASSWD:` rule limited to the minimal commands required.
+# - `userN.password_hash` below is the final deployed password hash. If you use `userN.operation_password` in the parameter YAML, that separate value is only for initial guest operations before cloud-init changes the password.
 
 hostname: {{hostname}}
 
@@ -66,4 +67,3 @@ write_files:
       {{netif1.ip_addr}}  {{fqdn}} {{hostname}}
     owner: root:root
     permissions: '0644'
-

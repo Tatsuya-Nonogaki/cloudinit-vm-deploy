@@ -25,7 +25,8 @@ seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"
 user1:
   name: admin01
   primary: true
-  password: "AdminPass123!"
+  operation_password: "CurrentGuestOpPass123!"  # Optional for the primary user only; used for current guest operations
+  password: "AdminPass123!"                     # Backward-compatible fallback guest-operation password if operation_password is omitted
 
 # == Disk targets (only what you intend to resize) ==
 # Swap devices: their partitions will be expanded (growpart) and the devices reinitialized (mkswap) so the swap fills the enlarged partitions.
@@ -39,6 +40,7 @@ resize_fs:
 
 # == OS/Cloud-init Parameters ==
 # IMPORTANT: provide a fresh instance-id (different from the original deployment)
+# DiskOnly mode does not register or update final user passwords through cloud-init; the password fields above are only for guest operations.
 instance_id: original01-reapply-20251209-01
 hostname: original01
 fqdn: original01.production.local
@@ -50,4 +52,3 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 45      # Pause before the polling above starts; default:60
-
