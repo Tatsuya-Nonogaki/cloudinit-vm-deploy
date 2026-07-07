@@ -224,7 +224,7 @@ function Get-OrderedUserKeys {
     $userKeys = @()
     try {
         if ($Params -and $Params.Keys) {
-            $userKeys = $Params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
+            $userKeys = $Params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]([regex]::Match($_, '\d+$').Value) }
         }
     } catch {
         Write-Verbose "Get-OrderedUserKeys: failed to enumerate user keys: $_"
@@ -1601,7 +1601,7 @@ $shBody
                 Write-Log "USER_RUNCMD_BLOCK placeholder replaced (runcmd count: $($runcmdList.Count))"
 
                 # 6. --- Placeholder replacement for SSH_KEYS block per user
-                $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
+                $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]([regex]::Match($_, '\d+$').Value) }
                 foreach ($userKey in $userKeys) {
                     $u = $params[$userKey]
                     if (-not $u) { continue }
@@ -2070,7 +2070,7 @@ sudo /bin/bash -c "chmod +x $guestQuickPath"
         } else {
             # Execute quick-check on guest and collect output
             try {
-                Write-Log "Performing quick check to collect clout-init base status..."
+                Write-Log "Performing quick check to collect cloud-init base status..."
                 $qcExecCmd = "sudo /bin/bash '$guestQuickPath'"
                 $qcRes = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
                     -ScriptText $qcExecCmd -ScriptType Bash
