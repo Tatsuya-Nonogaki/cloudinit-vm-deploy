@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.3 +03
+  Version: 0.3.3 +04
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -1329,47 +1329,44 @@ function InitializeClone {
 
     # Ensure guest workdir
     $guestInitPath = "$workDirOnVM/init-vm-cloudinit.sh"
-    try {
         $phase2cmd = @"
 sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
 "@
-        $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -ScriptText $phase2cmd -ScriptType Bash
-        Write-Log "Ensured work directory exists on the VM: $workDirOnVM"
-    } catch {
-        Write-Log -Error "Failed to create work directory on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase2cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to create work directory on the VM: $workDirOnVM"
         Exit 1
     }
+    Write-Log "Ensured work directory exists on the VM: $workDirOnVM"
 
     # Transfer the script and run on the clone
-    try {
-        Write-Log "Copying initialization script to the VM: $guestInitPath"
-        $null = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -Source $localInitPath -Destination $guestInitPath -AdditionalParameters @{ Force = $true }
-        Write-Verbose "Copied initialization script to the VM: $guestInitPath"
-    } catch {
-        Write-Log -Error "Failed to copy initialization script to the VM: $_"
+    Write-Log "Copying initialization script to the VM: $guestInitPath"
+    $res = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -Source $localInitPath -Destination $guestInitPath -AdditionalParameters @{ Force = $true }
+    if (-not $res) {
+        Write-Log -Error "Failed to copy initialization script to the VM: $guestInitPath"
         Exit 1
     }
+    Write-Verbose "Copied initialization script to the VM: $guestInitPath"
 
-    try {
         $phase2cmd = @"
 chmod +x $guestInitPath && sudo /bin/bash $guestInitPath
 "@
-        $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -ScriptText $phase2cmd -ScriptType Bash
-        Write-Log "Executed initialization script on the VM."
-    } catch {
-        Write-Log -Error "Failed to execute initialization script on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase2cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to execute initialization script on the VM."
         Exit 1
     }
+    Write-Log "Executed initialization script on the VM."
 
-    try {
-        $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -ScriptText "rm -f $guestInitPath" -ScriptType Bash
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText "rm -f $guestInitPath" -ScriptType Bash
+    if ($res) {
         Write-Log "Removed initialization script from the VM: $guestInitPath"
-    } catch {
-        Write-Log -Warn "Failed to remove initialization script from the VM: $_"
+    } else {
+        Write-Log -Warn "Failed to remove initialization script from the VM: $guestInitPath"
     }
 
     Write-Log "Phase 2 complete"
@@ -2131,18 +2128,17 @@ exit 1
     # Ensure guest workdir
     Write-Verbose "Phase-3 quick-check: ensuring guest work directory before uploading quick-check script."
 
-    try {
-        $phase3cmd = @"
+    $phase3cmd = @"
 sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
 "@
-        $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -ScriptText $phase3cmd -ScriptType Bash
-        Write-Log "Ensured work directory exists on the VM: '$workDirOnVM'"
-    } catch {
-        Write-Log -Error "Failed to ensure work directory on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase3cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to ensure work directory on the VM: $workDirOnVM"
         Remove-Item -Path $localQuickPath -ErrorAction SilentlyContinue
         Exit 1
     }
+    Write-Log "Ensured work directory exists on the VM: '$workDirOnVM'"
 
     if (-not $toolsAvailableForQuickCheck) {
         Write-Log -Warn "VMware Tools not available for quick-check; cannot reliably detect whether cloud-init ran in this boot. Proceeding to normal cloud-init completion polling as a fallback."
@@ -2245,12 +2241,12 @@ sudo /bin/bash -c "chmod +x $guestQuickPath"
                     Write-Log "Current cloud-init instance-id: $currentInstanceId"
                 }
 
-                try {
-                    $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-                        -ScriptText "rm -f $guestQuickPath" -ScriptType Bash
+                $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                    -ScriptText "rm -f $guestQuickPath" -ScriptType Bash
+                if ($res) {
                     Write-Log "Removed quick-check script from the VM: $guestQuickPath"
-                } catch {
-                    Write-Log -Warn "Failed to remove quick-check script from the VM: $_"
+                } else {
+                    Write-Log -Warn "Failed to remove quick-check script from the VM: $guestQuickPath"
                 }
 
                 switch ($qcRes.ExitCode) {
@@ -2472,12 +2468,12 @@ sudo /bin/bash -c "chmod +x $guestCheckPath"
         $elapsed += $cloudInitPollSec
     }
 
-    try {
-        $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -ScriptText "rm -f $guestCheckPath" -ScriptType Bash
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText "rm -f $guestCheckPath" -ScriptType Bash
+    if ($res) {
         Write-Log "Removed check script from the VM: $guestCheckPath"
-    } catch {
-        Write-Verbose "Failed to remove check script from the VM: $_"
+    } else {
+        Write-Log -Warn "Failed to remove check script from the VM: $guestCheckPath"
     }
 
     if (-not $cloudInitDone) {
@@ -2575,15 +2571,15 @@ function CloseDeploy {
             # Prepare guest user context for VM commands
             $guestUser = $primaryUserContext.GuestUserName
 
-            try {
-                $phase4cmd = @'
+            $phase4cmd = @'
 sudo /bin/bash -c "install -m 644 /dev/null /etc/cloud/cloud-init.disabled"
 '@
-                $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-                    -ScriptText $phase4cmd -ScriptType Bash
+            $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -ScriptText $phase4cmd -ScriptType Bash
+            if ($res) {
                 Write-Log "Created /etc/cloud/cloud-init.disabled to prevent future cloud-init invocation."
-            } catch {
-                Write-Log -Error "Failed to create cloud-init.disabled file: $_"
+            } else {
+                Write-Log -Error "Failed to create cloud-init.disabled file."
             }
         }
     } else {
