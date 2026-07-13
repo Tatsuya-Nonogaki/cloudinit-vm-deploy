@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.3 +04
+  Version: 0.3.3 +05
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -2161,26 +2161,35 @@ sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
         Write-Log "Copying quick-check script to the VM..."
         while (-not $qcCopied -and $qcAttempt -lt $maxQCAttempts) {
             $qcAttempt++
-            try {
-                $null = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-                    -Source $localQuickPath -Destination $guestQuickPath -AdditionalParameters @{ Force = $true }
+
+            $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -Source $localQuickPath -Destination $guestQuickPath -AdditionalParameters @{ Force = $true }
+
+            if ($resCopy) {
                 $phase3cmd = @"
 sudo /bin/bash -c "chmod +x $guestQuickPath"
 "@
-                $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                $resChmod = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
                     -ScriptText $phase3cmd -ScriptType Bash
-                $qcCopied = $true
-                Write-Log "Copied quick-check script to the VM: '$guestQuickPath' (attempt: $qcAttempt)"
-            } catch {
-                Write-Verbose "Copy-VMGuestFile for quick-check failed (attempt: $qcAttempt): $_"
-                # try waiting for tools briefly and retry
-                $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 10 -PollIntervalSec 2
-                if (-not $toolsOk2) {
-                    Write-Verbose "VMware Tools still unavailable; sleeping before next quick-check copy attempt..."
-                    Start-Sleep -Seconds 5
-                } else {
-                    Write-Verbose "VMware Tools recovered; retrying quick-check copy..."
+
+                if ($resChmod) {
+                    $qcCopied = $true
+                    Write-Log "Copied quick-check script to the VM: '$guestQuickPath' (attempt: $qcAttempt)"
+                    break
                 }
+
+                Write-Verbose "Quick-check script copy succeeded but chmod failed (attempt: $qcAttempt)."
+            } else {
+                Write-Verbose "Copy-VMGuestFile for quick-check failed (attempt: $qcAttempt)."
+            }
+
+            # try waiting for tools briefly and retry
+            $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 10 -PollIntervalSec 2
+            if (-not $toolsOk2) {
+                Write-Verbose "VMware Tools still unavailable; sleeping before next quick-check copy attempt..."
+                Start-Sleep -Seconds 5
+            } else {
+                Write-Verbose "VMware Tools recovered; retrying quick-check copy..."
             }
         }
 
@@ -2350,26 +2359,35 @@ exit 1
     Write-Log "Copying check script to the VM..."
     while (-not $copied -and $attempt -lt $maxAttempts) {
         $attempt++
-        try {
-            $null = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-                -Source $localCheckPath -Destination $guestCheckPath -AdditionalParameters @{ Force = $true }
+
+        $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+            -Source $localCheckPath -Destination $guestCheckPath -AdditionalParameters @{ Force = $true }
+
+        if ($resCopy) {
             $phase3cmd = @"
 sudo /bin/bash -c "chmod +x $guestCheckPath"
 "@
-            $null = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+            $resChmod = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
                 -ScriptText $phase3cmd -ScriptType Bash
-            $copied = $true
-            Write-Log "Copied check script to the VM: '$guestCheckPath' (attempt: $attempt)"
-        } catch {
-            Write-Verbose "Copy-VMGuestFile failed (attempt: $attempt): $_"
-            # try waiting for tools briefly and retry
-            $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
-            if (-not $toolsOk2) {
-                Write-Verbose "VMware Tools still unavailable; sleeping before next copy attempt..."
-                Start-Sleep -Seconds 10
-            } else {
-                Write-Verbose "VMware Tools recovered; retrying copy..."
+
+            if ($resChmod) {
+                $copied = $true
+                Write-Log "Copied check script to the VM: '$guestCheckPath' (attempt: $attempt)"
+                break
             }
+
+            Write-Verbose "Completion-check script copy succeeded but chmod failed (attempt: $attempt)."
+        } else {
+            Write-Verbose "Copy-VMGuestFile failed (attempt: $attempt)."
+        }
+
+        # try waiting for tools briefly and retry
+        $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
+        if (-not $toolsOk2) {
+            Write-Verbose "VMware Tools still unavailable; sleeping before next copy attempt..."
+            Start-Sleep -Seconds 10
+        } else {
+            Write-Verbose "VMware Tools recovered; retrying copy..."
         }
     }
 
