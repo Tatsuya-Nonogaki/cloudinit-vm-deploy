@@ -88,9 +88,9 @@ user1:
   groups: "wheel,adm,systemd-journal"
   operation_password: "TemplateAdminPass123!"   # Plain-text password currently valid for the primary user on the Template VM. Omit this field if the deployed VM should keep the same password
   password: "AdminPass123!"                     # Final plain-text password for the primary user on the deployed VM
-  password_hash: "$6$rounds=656000$YourHashHere123$abcdef..."      # Hash of the final deployed password above, for user registration in the guest Linux
+  password_hash: "$6$rounds=656000$YourHashHere123$abcdef..."      # Hash of the final deployed password above, for user registration in the guest Linux: Generate using "openssl passwd -6 'password'"
   ssh_keys:
-    - "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArandomkey1... admin01@workstation"
+    - "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArandomkey1... admin01@workstation"   # ssh keys are optional
    #- "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIrandomkey2... admin01@laptop"
 
 #user2:
@@ -109,4 +109,3 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 60      # Pause before the polling above starts; default:60
-
