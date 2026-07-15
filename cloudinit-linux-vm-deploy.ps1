@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.3 +05
+  Version: 0.3.4
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -179,8 +179,7 @@ $LogFilePath = Join-Path $spooldir "deploy.log"
 
 # Script-scope guest credential state cache array for the primary user only.
 # Ordered by current preference: [0] preferred, [1] fallback
-$PrimaryGuestCredentialState = $null
-$PrimaryGuestCredentialStateInitialized = $false
+$PrimaryGuestCredentialState = New-Object System.Collections.ArrayList
 
 function Write-Log {
     param(
@@ -346,28 +345,28 @@ function New-GuestCredentialEntry {
 
 function Get-PrimaryGuestCredentialState {
     param(
-        [object]$Params
+        [hashtable]$PrimaryUserContext
     )
 
-    if (-not $Params) {
-        Write-Log -Error "Get-PrimaryGuestCredentialState: params is null."
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Get-PrimaryGuestCredentialState: PrimaryUserContext is null."
         return $false
     }
 
     # Initialize the script-scope credential state list
-    if ($PrimaryGuestCredentialStateInitialized -and $PrimaryGuestCredentialState) {
+    if ($PrimaryGuestCredentialState -and $PrimaryGuestCredentialState.Count -gt 0) {
         return $true
     }
-    $PrimaryGuestCredentialState = New-Object System.Collections.ArrayList
 
     $opPlain = $null
     $pwPlain = $null
 
-    if ($Params.PSObject.Properties.Name -contains 'operation_password') {
-        $opPlain = [string]$Params.operation_password
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.OperationPassword)) {
+        $opPlain = [string]$PrimaryUserContext.OperationPassword
     }
-    if ($Params.PSObject.Properties.Name -contains 'password') {
-        $pwPlain = [string]$Params.password
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.FinalPassword)) {
+        $pwPlain = [string]$PrimaryUserContext.FinalPassword
     }
 
     $entryOp = New-GuestCredentialEntry -Source 'operation_password' -PlainText $opPlain
@@ -390,8 +389,6 @@ function Get-PrimaryGuestCredentialState {
         return $false
     }
 
-    $PrimaryGuestCredentialStateInitialized = $true
-
     Write-Verbose ("Get-PrimaryGuestCredentialState: initialized with {0} candidate(s): {1}" -f `
         $PrimaryGuestCredentialState.Count,
         (($PrimaryGuestCredentialState | ForEach-Object { $_.Source }) -join ' -> ')
@@ -405,7 +402,7 @@ function Promote-PrimaryGuestCredentialCandidate {
         [int]$Index
     )
 
-    if (-not $PrimaryGuestCredentialStateInitialized -or -not $PrimaryGuestCredentialState) {
+    if (-not $PrimaryGuestCredentialState -or $PrimaryGuestCredentialState.Count -lt 1) {
         Write-Verbose "Promote-PrimaryGuestCredentialCandidate: credential state is not initialized."
         return
     }
@@ -434,34 +431,42 @@ function Promote-PrimaryGuestCredentialCandidate {
 function Invoke-VMScriptWithCredFallback {
     param(
         $VM,
+        [hashtable]$PrimaryUserContext,
         [string]$ScriptText,
-        [string]$ScriptType,
-        [string]$GuestUser,
-        [object]$Params
+        [string]$ScriptType
     )
 
     if (-not $VM) {
         Write-Log -Error "Invoke-VMScriptWithCredFallback: VM is null."
         return $null
     }
+
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: PrimaryUserContext is null."
+        return $null
+    }
+
     if (-not $ScriptText) {
         Write-Log -Error "Invoke-VMScriptWithCredFallback: ScriptText is empty."
         return $null
     }
+
     if (-not $ScriptType) {
         Write-Log -Error "Invoke-VMScriptWithCredFallback: ScriptType is empty."
         return $null
     }
+
+    $GuestUser = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.GuestUserName)) {
+        $GuestUser = [string]$PrimaryUserContext.GuestUserName
+    }
+
     if (-not $GuestUser) {
         Write-Log -Error "Invoke-VMScriptWithCredFallback: GuestUser is empty."
         return $null
     }
-    if (-not $Params) {
-        Write-Log -Error "Invoke-VMScriptWithCredFallback: Params is null."
-        return $null
-    }
 
-    $ok = Get-PrimaryGuestCredentialState -Params $Params
+    $ok = Get-PrimaryGuestCredentialState -PrimaryUserContext $PrimaryUserContext
     if (-not $ok) {
         Write-Log -Error "Invoke-VMScriptWithCredFallback: guest credential state is unavailable."
         return $null
@@ -471,14 +476,14 @@ function Invoke-VMScriptWithCredFallback {
 
     for ($i = 0; $i -lt $PrimaryGuestCredentialState.Count; $i++) {
         $candidate = $PrimaryGuestCredentialState[$i]
-        Write-Verbose ("Invoke-VMScriptWithCredFallback: trying source '{0}' for guest user '{1}'." -f `
+        Write-Verbose ("Invoke-VMScriptWithCredFallback: trying credential source '{0}' for guest user '{1}'." -f `
             $candidate.Source, $GuestUser)
 
         try {
             $res = Invoke-VMScript -VM $VM -ScriptText $ScriptText -ScriptType $ScriptType `
                 -GuestUser $GuestUser -GuestPassword $candidate.SecureString -ErrorAction Stop
 
-            Write-Verbose ("Invoke-VMScriptWithCredFallback: succeeded with source '{0}'." -f $candidate.Source)
+            Write-Verbose ("Invoke-VMScriptWithCredFallback: succeeded with credential source '{0}'." -f $candidate.Source)
             Promote-PrimaryGuestCredentialCandidate -Index $i
             return $res
         } catch {
@@ -496,40 +501,44 @@ function Invoke-VMScriptWithCredFallback {
 function Copy-VMGuestFileWithCredFallback {
     param(
         $VM,
+        [hashtable]$PrimaryUserContext,
         [string]$Source,
         [string]$Destination,
-        [string]$Direction,
-        [string]$GuestUser,
-        [object]$Params,
-        [switch]$Force
+        [string]$Direction = 'LocalToGuest',
+        [bool]$Force = $true
     )
 
     if (-not $VM) {
         Write-Log -Error "Copy-VMGuestFileWithCredFallback: VM is null."
         return $null
     }
+
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: PrimaryUserContext is null."
+        return $null
+    }
+
     if (-not $Source) {
         Write-Log -Error "Copy-VMGuestFileWithCredFallback: Source is empty."
         return $null
     }
+
     if (-not $Destination) {
         Write-Log -Error "Copy-VMGuestFileWithCredFallback: Destination is empty."
         return $null
     }
-    if (-not $Direction) {
-        Write-Log -Error "Copy-VMGuestFileWithCredFallback: Direction is empty."
-        return $null
+
+    $GuestUser = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.GuestUserName)) {
+        $GuestUser = [string]$PrimaryUserContext.GuestUserName
     }
+
     if (-not $GuestUser) {
         Write-Log -Error "Copy-VMGuestFileWithCredFallback: GuestUser is empty."
         return $null
     }
-    if (-not $Params) {
-        Write-Log -Error "Copy-VMGuestFileWithCredFallback: Params is null."
-        return $null
-    }
 
-    $ok = Get-PrimaryGuestCredentialState -Params $Params
+    $ok = Get-PrimaryGuestCredentialState -PrimaryUserContext $PrimaryUserContext
     if (-not $ok) {
         Write-Log -Error "Copy-VMGuestFileWithCredFallback: guest credential state is unavailable."
         return $null
@@ -539,16 +548,16 @@ function Copy-VMGuestFileWithCredFallback {
 
     for ($i = 0; $i -lt $PrimaryGuestCredentialState.Count; $i++) {
         $candidate = $PrimaryGuestCredentialState[$i]
-        Write-Verbose ("Copy-VMGuestFileWithCredFallback: trying source '{0}' for guest user '{1}'." -f `
+        Write-Verbose ("Copy-VMGuestFileWithCredFallback: trying credential source '{0}' for guest user '{1}'." -f `
             $candidate.Source, $GuestUser)
 
         try {
             if ($Direction -eq 'LocalToGuest') {
-                $res = Copy-VMGuestFile -LocalToGuest -Source $Source -Destination $Destination `
+                $null = Copy-VMGuestFile -LocalToGuest -Source $Source -Destination $Destination `
                     -VM $VM -GuestUser $GuestUser -GuestPassword $candidate.SecureString `
                     -Force:$Force -ErrorAction Stop
             } elseif ($Direction -eq 'GuestToLocal') {
-                $res = Copy-VMGuestFile -GuestToLocal -Source $Source -Destination $Destination `
+                $null = Copy-VMGuestFile -GuestToLocal -Source $Source -Destination $Destination `
                     -VM $VM -GuestUser $GuestUser -GuestPassword $candidate.SecureString `
                     -Force:$Force -ErrorAction Stop
             } else {
@@ -556,9 +565,9 @@ function Copy-VMGuestFileWithCredFallback {
                 return $null
             }
 
-            Write-Verbose ("Copy-VMGuestFileWithCredFallback: succeeded with source '{0}'." -f $candidate.Source)
+            Write-Verbose ("Copy-VMGuestFileWithCredFallback: succeeded with credential source '{0}'." -f $candidate.Source)
             Promote-PrimaryGuestCredentialCandidate -Index $i
-            return $res
+            return $true
         } catch {
             $lastErrorText = $_.Exception.Message
             Write-Verbose ("Copy-VMGuestFileWithCredFallback: source '{0}' failed: {1}" -f `
@@ -1343,7 +1352,7 @@ sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
     # Transfer the script and run on the clone
     Write-Log "Copying initialization script to the VM: $guestInitPath"
     $res = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-        -Source $localInitPath -Destination $guestInitPath -AdditionalParameters @{ Force = $true }
+        -Source $localInitPath -Destination $guestInitPath
     if (-not $res) {
         Write-Log -Error "Failed to copy initialization script to the VM: $guestInitPath"
         Exit 1
@@ -2163,7 +2172,7 @@ sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
             $qcAttempt++
 
             $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-                -Source $localQuickPath -Destination $guestQuickPath -AdditionalParameters @{ Force = $true }
+                -Source $localQuickPath -Destination $guestQuickPath
 
             if ($resCopy) {
                 $phase3cmd = @"
@@ -2361,7 +2370,7 @@ exit 1
         $attempt++
 
         $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
-            -Source $localCheckPath -Destination $guestCheckPath -AdditionalParameters @{ Force = $true }
+            -Source $localCheckPath -Destination $guestCheckPath
 
         if ($resCopy) {
             $phase3cmd = @"
