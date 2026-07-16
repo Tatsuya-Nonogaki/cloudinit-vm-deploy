@@ -93,6 +93,7 @@ user1:
     - "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArandomkey1... admin01@workstation"   # ssh keys are optional
    #- "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIrandomkey2... admin01@laptop"
 
+# Additional user example: uncomment to use; make sure to uncomment the correspoiding block in user-data_template.yaml 
 #user2:
 #  name: deploy01
 #  password: "DeployPass456!"                   # Plain-text password for this user when created on the deployed VM
