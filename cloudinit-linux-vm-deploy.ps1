@@ -2589,7 +2589,7 @@ function CloseDeploy {
             Write-Log "Skipped deactivation of cloud-init; NoRestart specified and VM is not PoweredOn."
         } else {
             # Normal behaviour: wait for VMware Tools and attempt to create cloud-init.disabled.
-            $toolsOk = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
+            $toolsOk = Wait-ForVMwareTools -VM $vm -TimeoutSec 60
             if (-not $toolsOk) {
                 Write-Log -Error "Unable to disable cloud-init since VMware Tools is NOT running. Make sure the VM is powered on and rerun Phase-4."
                 Exit 1
