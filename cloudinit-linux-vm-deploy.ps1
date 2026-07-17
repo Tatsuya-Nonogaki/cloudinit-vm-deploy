@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.3
+  Version: 0.3.4
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -177,6 +177,10 @@ if ($phaseSorted.Count -gt 1 -and $NoRestart) {
 # LogFilePath (temporary)
 $LogFilePath = Join-Path $spooldir "deploy.log"
 
+# Script-scope guest credential state cache array for the primary user only.
+# Ordered by current preference: [0] preferred, [1] fallback
+$PrimaryGuestCredentialState = New-Object System.Collections.ArrayList
+
 function Write-Log {
     param(
         [string]$Message,
@@ -212,6 +216,425 @@ function ConvertToSecureStringFromPlain {
     } catch {
         Write-Log -Error "ConvertToSecureStringFromPlain: ConvertTo-SecureString failed: $_"
         return $null
+    }
+}
+
+function Get-OrderedUserKeys {
+    param(
+        [Parameter()]
+        [object]$Params
+    )
+
+    $userKeys = @()
+    try {
+        if ($Params -and $Params.Keys) {
+            $userKeys = $Params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]([regex]::Match($_, '\d+$').Value) }
+        }
+    } catch {
+        Write-Verbose "Get-OrderedUserKeys: failed to enumerate user keys: $_"
+        $userKeys = @()
+    }
+    return $userKeys
+}
+
+function Resolve-PrimaryUserContext {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Params,
+        [switch]$DiskOnly
+    )
+
+    $userKeys = Get-OrderedUserKeys -Params $Params
+    $primaryUserKey = $null
+    $primaryUser = $null
+
+    foreach ($k in $userKeys) {
+        $u = $Params[$k]
+        if ($u -and $u.primary) {
+            $primaryUserKey = $k
+            $primaryUser = $u
+            break
+        }
+    }
+
+    if (-not $primaryUser -and $userKeys.Count -gt 0) {
+        $primaryUserKey = $userKeys[0]
+        $primaryUser = $Params[$primaryUserKey]
+    }
+
+    foreach ($k in $userKeys) {
+        if ($k -eq $primaryUserKey) { continue }
+        $u = $Params[$k]
+        if ($u -and -not [string]::IsNullOrWhiteSpace([string]$u.operation_password)) {
+            Write-Log -Warn "Ignoring ${k}.operation_password because only the primary user ($primaryUserKey) can use operation_password for guest operations."
+        }
+    }
+
+    $guestUserName = $null
+    $operationPassword = $null
+    $finalPassword = $null
+    $finalPasswordHash = $null
+
+    if ($primaryUser) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$primaryUser.name)) {
+            $guestUserName = [string]$primaryUser.name
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$primaryUser.password)) {
+            $finalPassword = [string]$primaryUser.password
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$primaryUser.password_hash)) {
+            $finalPasswordHash = [string]$primaryUser.password_hash
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$primaryUser.operation_password)) {
+            $operationPassword = [string]$primaryUser.operation_password
+        } elseif ($finalPassword) {
+            $operationPassword = $finalPassword
+            $modeName = if ($DiskOnly) { 'DiskOnly' } else { 'normal' }
+            Write-Verbose "Primary user operation_password omitted in $modeName mode; falling back to ${primaryUserKey}.password for guest operations."
+        }
+    }
+
+    Write-Verbose ("Resolve-PrimaryUserContext: primaryKey='{0}', guestUser='{1}', operationPasswordPresent={2}, finalPasswordPresent={3}, passwordHashPresent={4}, diskOnly={5}" -f `
+        $primaryUserKey, `
+        $guestUserName, `
+        (-not [string]::IsNullOrWhiteSpace($operationPassword)), `
+        (-not [string]::IsNullOrWhiteSpace($finalPassword)), `
+        (-not [string]::IsNullOrWhiteSpace($finalPasswordHash)), `
+        [bool]$DiskOnly)
+
+    return @{
+        UserKeys = $userKeys
+        PrimaryUserKey = $primaryUserKey
+        PrimaryUser = $primaryUser
+        GuestUserName = $guestUserName
+        OperationPassword = $operationPassword
+        FinalPassword = $finalPassword
+        FinalPasswordHash = $finalPasswordHash
+        SuccessfulGuestPassword = $null
+    }
+}
+
+function New-GuestCredentialEntry {
+    param(
+        [string]$Source,
+        [string]$PlainText
+    )
+
+    if (-not $Source -or $Source.Trim().Length -eq 0) {
+        Write-Log -Error "New-GuestCredentialEntry: source is empty."
+        return $null
+    }
+
+    if (-not $PlainText -or $PlainText.Trim().Length -eq 0) {
+        Write-Verbose ("New-GuestCredentialEntry: source '{0}' skipped because password is empty." -f $Source)
+        return $null
+    }
+
+    $secure = ConvertToSecureStringFromPlain $PlainText
+    if (-not $secure) {
+        Write-Log -Error ("New-GuestCredentialEntry: failed to convert password for source '{0}' to SecureString." -f $Source)
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        PlainText    = $PlainText
+        SecureString = $secure
+        Source       = $Source
+    }
+}
+
+function Get-PrimaryGuestCredentialState {
+    param(
+        [hashtable]$PrimaryUserContext
+    )
+
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Get-PrimaryGuestCredentialState: PrimaryUserContext is null."
+        return $false
+    }
+
+    # Initialize the script-scope credential state list
+    if ($PrimaryGuestCredentialState -and $PrimaryGuestCredentialState.Count -gt 0) {
+        return $true
+    }
+
+    $opPlain = $null
+    $pwPlain = $null
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.OperationPassword)) {
+        $opPlain = [string]$PrimaryUserContext.OperationPassword
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.FinalPassword)) {
+        $pwPlain = [string]$PrimaryUserContext.FinalPassword
+    }
+
+    $entryOp = New-GuestCredentialEntry -Source 'operation_password' -PlainText $opPlain
+    $entryPw = New-GuestCredentialEntry -Source 'password' -PlainText $pwPlain
+
+    if ($entryOp) {
+        [void]$PrimaryGuestCredentialState.Add($entryOp)
+    }
+
+    if ($entryPw) {
+        if (-not $entryOp -or $entryPw.PlainText -ne $entryOp.PlainText) {
+            [void]$PrimaryGuestCredentialState.Add($entryPw)
+        } else {
+            Write-Verbose "Get-PrimaryGuestCredentialState: 'password' duplicates 'operation_password'; keeping only one candidate."
+        }
+    }
+
+    if ($PrimaryGuestCredentialState.Count -eq 0) {
+        Write-Log -Error "Get-PrimaryGuestCredentialState: no valid guest credential candidates are available for the primary user."
+        return $false
+    }
+
+    Write-Verbose ("Get-PrimaryGuestCredentialState: initialized with {0} candidate(s): {1}" -f `
+        $PrimaryGuestCredentialState.Count,
+        (($PrimaryGuestCredentialState | ForEach-Object { $_.Source }) -join ' -> ')
+    )
+
+    return $true
+}
+
+function Promote-PrimaryGuestCredentialCandidate {
+    param(
+        [int]$Index
+    )
+
+    if (-not $PrimaryGuestCredentialState -or $PrimaryGuestCredentialState.Count -lt 1) {
+        Write-Verbose "Promote-PrimaryGuestCredentialCandidate: credential state is not initialized."
+        return
+    }
+
+    if ($Index -le 0) {
+        Write-Verbose "Promote-PrimaryGuestCredentialCandidate: preferred candidate already succeeded; no reorder needed."
+        return
+    }
+
+    if ($Index -ge $PrimaryGuestCredentialState.Count) {
+        Write-Log -Warn ("Promote-PrimaryGuestCredentialCandidate: invalid candidate index {0}; state count is {1}." -f `
+            $Index, $PrimaryGuestCredentialState.Count)
+        return
+    }
+
+    $chosen = $PrimaryGuestCredentialState[$Index]
+    $oldTop = $PrimaryGuestCredentialState[0]
+
+    $PrimaryGuestCredentialState.RemoveAt($Index)
+    $PrimaryGuestCredentialState.Insert(0, $chosen)
+
+    Write-Verbose ("Promote-PrimaryGuestCredentialCandidate: promoted source '{0}' to preferred; previous preferred was '{1}'." -f `
+        $chosen.Source, $oldTop.Source)
+}
+
+function Invoke-VMScriptWithCredFallback {
+    param(
+        $VM,
+        [hashtable]$PrimaryUserContext,
+        [string]$ScriptText,
+        [string]$ScriptType
+    )
+
+    if (-not $VM) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: VM is null."
+        return $null
+    }
+
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: PrimaryUserContext is null."
+        return $null
+    }
+
+    if (-not $ScriptText) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: ScriptText is empty."
+        return $null
+    }
+
+    if (-not $ScriptType) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: ScriptType is empty."
+        return $null
+    }
+
+    $GuestUser = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.GuestUserName)) {
+        $GuestUser = [string]$PrimaryUserContext.GuestUserName
+    }
+
+    if (-not $GuestUser) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: GuestUser is empty."
+        return $null
+    }
+
+    $ok = Get-PrimaryGuestCredentialState -PrimaryUserContext $PrimaryUserContext
+    if (-not $ok) {
+        Write-Log -Error "Invoke-VMScriptWithCredFallback: guest credential state is unavailable."
+        return $null
+    }
+
+    $lastErrorText = $null
+
+    for ($i = 0; $i -lt $PrimaryGuestCredentialState.Count; $i++) {
+        $candidate = $PrimaryGuestCredentialState[$i]
+        Write-Verbose ("Invoke-VMScriptWithCredFallback: trying credential source '{0}' for guest user '{1}'." -f `
+            $candidate.Source, $GuestUser)
+
+        try {
+            $res = Invoke-VMScript -VM $VM -ScriptText $ScriptText -ScriptType $ScriptType `
+                -GuestUser $GuestUser -GuestPassword $candidate.SecureString -ErrorAction Stop
+
+            Write-Verbose ("Invoke-VMScriptWithCredFallback: succeeded with credential source '{0}'." -f $candidate.Source)
+            Promote-PrimaryGuestCredentialCandidate -Index $i
+            return $res
+        } catch {
+            $lastErrorText = $_.Exception.Message
+            Write-Verbose ("Invoke-VMScriptWithCredFallback: source '{0}' failed: {1}" -f `
+                $candidate.Source, $lastErrorText)
+        }
+    }
+
+    Write-Log -Error ("Invoke-VMScriptWithCredFallback: all guest credential candidates failed for user '{0}'. Last error: {1}" -f `
+        $GuestUser, $lastErrorText)
+    return $null
+}
+
+function Copy-VMGuestFileWithCredFallback {
+    param(
+        $VM,
+        [hashtable]$PrimaryUserContext,
+        [string]$Source,
+        [string]$Destination,
+        [string]$Direction = 'LocalToGuest',
+        [bool]$Force = $true
+    )
+
+    if (-not $VM) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: VM is null."
+        return $null
+    }
+
+    if (-not $PrimaryUserContext) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: PrimaryUserContext is null."
+        return $null
+    }
+
+    if (-not $Source) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: Source is empty."
+        return $null
+    }
+
+    if (-not $Destination) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: Destination is empty."
+        return $null
+    }
+
+    $GuestUser = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$PrimaryUserContext.GuestUserName)) {
+        $GuestUser = [string]$PrimaryUserContext.GuestUserName
+    }
+
+    if (-not $GuestUser) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: GuestUser is empty."
+        return $null
+    }
+
+    $ok = Get-PrimaryGuestCredentialState -PrimaryUserContext $PrimaryUserContext
+    if (-not $ok) {
+        Write-Log -Error "Copy-VMGuestFileWithCredFallback: guest credential state is unavailable."
+        return $null
+    }
+
+    $lastErrorText = $null
+
+    for ($i = 0; $i -lt $PrimaryGuestCredentialState.Count; $i++) {
+        $candidate = $PrimaryGuestCredentialState[$i]
+        Write-Verbose ("Copy-VMGuestFileWithCredFallback: trying credential source '{0}' for guest user '{1}'." -f `
+            $candidate.Source, $GuestUser)
+
+        try {
+            if ($Direction -eq 'LocalToGuest') {
+                $null = Copy-VMGuestFile -LocalToGuest -Source $Source -Destination $Destination `
+                    -VM $VM -GuestUser $GuestUser -GuestPassword $candidate.SecureString `
+                    -Force:$Force -ErrorAction Stop
+            } elseif ($Direction -eq 'GuestToLocal') {
+                $null = Copy-VMGuestFile -GuestToLocal -Source $Source -Destination $Destination `
+                    -VM $VM -GuestUser $GuestUser -GuestPassword $candidate.SecureString `
+                    -Force:$Force -ErrorAction Stop
+            } else {
+                Write-Log -Error ("Copy-VMGuestFileWithCredFallback: invalid Direction '{0}'." -f $Direction)
+                return $null
+            }
+
+            Write-Verbose ("Copy-VMGuestFileWithCredFallback: succeeded with credential source '{0}'." -f $candidate.Source)
+            Promote-PrimaryGuestCredentialCandidate -Index $i
+            return $true
+        } catch {
+            $lastErrorText = $_.Exception.Message
+            Write-Verbose ("Copy-VMGuestFileWithCredFallback: source '{0}' failed: {1}" -f `
+                $candidate.Source, $lastErrorText)
+        }
+    }
+
+    Write-Log -Error ("Copy-VMGuestFileWithCredFallback: all guest credential candidates failed for user '{0}'. Last error: {1}" -f `
+        $GuestUser, $lastErrorText)
+    return $null
+}
+
+function Assert-UserConfiguration {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Params,
+        [Parameter(Mandatory)]
+        [hashtable]$PrimaryUserContext,
+        [Parameter(Mandatory)]
+        [int[]]$Phase,
+        [switch]$DiskOnly,
+        [switch]$NoCloudReset,
+        [string]$VmName
+    )
+
+    $requiresGuestOperations = ($Phase -contains 2) -or ($Phase -contains 3) -or ($Phase -contains 4 -and -not $NoCloudReset)
+    $requiresSeedUserFields = (-not $DiskOnly) -and ($Phase -contains 3)
+    $requiresUserDefinitions = $requiresGuestOperations -or $requiresSeedUserFields
+
+    if ($requiresUserDefinitions -and $PrimaryUserContext.UserKeys.Count -eq 0) {
+        Write-Log -Error "No userN definitions were found in the parameter file for '$VmName'. Aborting deployment."
+        Exit 3
+    }
+
+    if ($requiresUserDefinitions -and -not $PrimaryUserContext.PrimaryUser) {
+        Write-Log -Error "Could not determine the primary user definition for '$VmName'. Aborting deployment."
+        Exit 3
+    }
+
+    if ($requiresUserDefinitions -and [string]::IsNullOrWhiteSpace($PrimaryUserContext.GuestUserName)) {
+        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define 'name'. Aborting deployment."
+        Exit 3
+    }
+
+    if ($requiresGuestOperations -and [string]::IsNullOrWhiteSpace($PrimaryUserContext.OperationPassword)) {
+        Write-Log -Error "Primary user '$($PrimaryUserContext.PrimaryUserKey)' must define at least one guest operation password field (operation_password or password). Aborting deployment."
+        Exit 3
+    }
+
+    if ($requiresSeedUserFields) {
+        foreach ($userKey in $PrimaryUserContext.UserKeys) {
+            $userDef = $Params[$userKey]
+            if (-not $userDef) { continue }
+
+            if ([string]::IsNullOrWhiteSpace([string]$userDef.name)) {
+                Write-Log -Error "Normal mode requires ${userKey}.name for cloud-init user rendering. Aborting deployment."
+                Exit 3
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$userDef.password)) {
+                Write-Log -Error "Normal mode requires ${userKey}.password as the final deployed password. Aborting deployment."
+                Exit 3
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$userDef.password_hash)) {
+                Write-Log -Error "Normal mode requires ${userKey}.password_hash as the final deployed password hash. Aborting deployment."
+                Exit 3
+            }
+        }
     }
 }
 
@@ -588,44 +1011,15 @@ if (-not (Test-Path $workdir)) {
 }
 $LogFilePath = Join-Path $workdir ("deploy-" + (Get-Date -Format 'yyyyMMdd') + ".log")
 
-# --- Select "primary" user from "userN" hashes and map its name and password to top-level variables ---
-$userKeys = @()
-try {
-    # Find keys like user1, user2 ... and sort numerically
-    $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
-} catch {
-    $userKeys = @()
-}
+$primaryUserContext = Resolve-PrimaryUserContext -Params $params -DiskOnly:$DiskOnly
+Assert-UserConfiguration -Params $params -PrimaryUserContext $primaryUserContext -Phase $Phase -DiskOnly:$DiskOnly -NoCloudReset:$NoCloudReset -VmName $new_vm_name
 
-if ($userKeys.Count -gt 0) {
-    # Choose the first user with primary=true; otherwise fall back to the first declared user.
-    $primaryUser = $null
-    foreach ($k in $userKeys) {
-        $u = $params[$k]
-        if ($u -and $u.primary) {
-            $primaryUser = $u
-            break
-        }
-    }
-    if (-not $primaryUser) {
-        $primaryUser = $params[$userKeys[0]]
-    }
+if ($primaryUserContext.GuestUserName) { $params.username = $primaryUserContext.GuestUserName }
+if ($primaryUserContext.FinalPassword) { $params.password = $primaryUserContext.FinalPassword }
+if ($primaryUserContext.OperationPassword) { $params.operation_password = $primaryUserContext.OperationPassword }
 
-    if ($primaryUser) {
-        if ($primaryUser.name)     { $params.username = $primaryUser.name }
-        if ($primaryUser.password) { $params.password = $primaryUser.password }
-        Write-Log "Primary user selected for in-guest operations: '$($params.username)'"
-    }
-}
-
-if (
-    ($Phase -contains 2) -or ($Phase -contains 3) -or
-    ( ($Phase -contains 4) -and -not $NoCloudReset )
-) {
-    if (-not ($params.username -and $params.password)) {
-        Write-Log -Error "Could not determine primary user credentials (username/password) for in-guest operations for '$new_vm_name'. Aborting deployment."
-        Exit 3
-    }
+if ($primaryUserContext.GuestUserName) {
+    Write-Log "Primary user selected for in-guest operations: '$($primaryUserContext.GuestUserName)'"
 }
 
 # Connect to vCenter
@@ -858,14 +1252,8 @@ function InitializeClone {
         Exit 1
     }
 
-    # Prepare username and password for VM commands
-    $guestUser = $params.username
-    $guestPassPlain = $params.password
-    $guestPass = ConvertToSecureStringFromPlain $guestPassPlain
-    if (-not $guestPass) {
-        Write-Log -Error "Failed to convert guest password to SecureString. Aborting in Phase-2."
-        Exit 3
-    }
+    # Prepare guest user context for VM commands
+    $guestUser = $primaryUserContext.GuestUserName
 
     # Prepare the initialization script
     if ($DiskOnly) {
@@ -950,47 +1338,44 @@ function InitializeClone {
 
     # Ensure guest workdir
     $guestInitPath = "$workDirOnVM/init-vm-cloudinit.sh"
-    try {
         $phase2cmd = @"
 sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
 "@
-        $null = Invoke-VMScript -VM $vm -ScriptText $phase2cmd -ScriptType Bash `
-            -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
-        Write-Log "Ensured work directory exists on the VM: $workDirOnVM"
-    } catch {
-        Write-Log -Error "Failed to create work directory on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase2cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to create work directory on the VM: $workDirOnVM"
         Exit 1
     }
+    Write-Log "Ensured work directory exists on the VM: $workDirOnVM"
 
     # Transfer the script and run on the clone
-    try {
-        Write-Log "Copying initialization script to the VM: $guestInitPath"
-        $null = Copy-VMGuestFile -LocalToGuest -Source $localInitPath -Destination $guestInitPath `
-            -VM $vm -GuestUser $guestUser -GuestPassword $guestPass -Force -ErrorAction Stop
-        Write-Verbose "Copied initialization script to the VM: $guestInitPath"
-    } catch {
-        Write-Log -Error "Failed to copy initialization script to the VM: $_"
+    Write-Log "Copying initialization script to the VM: $guestInitPath"
+    $res = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -Source $localInitPath -Destination $guestInitPath
+    if (-not $res) {
+        Write-Log -Error "Failed to copy initialization script to the VM: $guestInitPath"
         Exit 1
     }
+    Write-Verbose "Copied initialization script to the VM: $guestInitPath"
 
-    try {
         $phase2cmd = @"
 chmod +x $guestInitPath && sudo /bin/bash $guestInitPath
 "@
-        $null = Invoke-VMScript -VM $vm -ScriptText $phase2cmd -ScriptType Bash `
-            -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
-        Write-Log "Executed initialization script on the VM."
-    } catch {
-        Write-Log -Error "Failed to execute initialization script on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase2cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to execute initialization script on the VM."
         Exit 1
     }
+    Write-Log "Executed initialization script on the VM."
 
-    try {
-        $null = Invoke-VMScript -VM $vm -ScriptText "rm -f $guestInitPath" -ScriptType Bash `
-            -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText "rm -f $guestInitPath" -ScriptType Bash
+    if ($res) {
         Write-Log "Removed initialization script from the VM: $guestInitPath"
-    } catch {
-        Write-Log -Warn "Failed to remove initialization script from the VM: $_"
+    } else {
+        Write-Log -Warn "Failed to remove initialization script from the VM: $guestInitPath"
     }
 
     Write-Log "Phase 2 complete"
@@ -1051,14 +1436,8 @@ function CloudInitKickStart {
         Exit 1
     }
 
-    # Prepare username and password for VM commands
-    $guestUser = $params.username
-    $guestPassPlain = $params.password
-    $guestPass = ConvertToSecureStringFromPlain $guestPassPlain
-    if (-not $guestPass) {
-        Write-Log -Error "Failed to convert guest password to SecureString. Aborting in Phase-3."
-        Exit 3
-    }
+    # Prepare guest user context for VM commands
+    $guestUser = $primaryUserContext.GuestUserName
 
     # --- Early check for /etc/cloud/cloud-init.disabled; if the file exists Phase-3 is meaningless
     $wasPowerOnAtBegin = $false      # Flag to indicate this VM was already PoweredOn when this phase started
@@ -1073,8 +1452,8 @@ function CloudInitKickStart {
 
             $checkCmd = "sudo /bin/bash -c 'if [ -f /etc/cloud/cloud-init.disabled ]; then echo CLOUDINIT_DISABLED; exit 0; else echo CLOUDINIT_ENABLED; exit 1; fi'"
             try {
-                $res = Invoke-VMScript -VM $vm -GuestUser $guestUser -GuestPassword $guestPass `
-                    -ScriptText $checkCmd -ScriptType Bash -ErrorAction Stop
+                $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                    -ScriptText $checkCmd -ScriptType Bash
 
                 $out = if ($res.ScriptOutput) { ($res.ScriptOutput -join [Environment]::NewLine).Trim() } `
                        elseif ($res.ScriptError) { ($res.ScriptError -join [Environment]::NewLine).Trim() } `
@@ -1354,7 +1733,7 @@ $shBody
                 Write-Log "USER_RUNCMD_BLOCK placeholder replaced (runcmd count: $($runcmdList.Count))"
 
                 # 6. --- Placeholder replacement for SSH_KEYS block per user
-                $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]($_ -replace '^user','') }
+                $userKeys = $params.Keys | Where-Object { $_ -match '^user\d+$' } | Sort-Object { [int]([regex]::Match($_, '\d+$').Value) }
                 foreach ($userKey in $userKeys) {
                     $u = $params[$userKey]
                     if (-not $u) { continue }
@@ -1756,18 +2135,19 @@ exit 1
     $toolsAvailableForQuickCheck = Wait-ForVMwareTools -VM $vm -TimeoutSec 20 -PollIntervalSec 5
 
     # Ensure guest workdir
-    try {
-        $phase3cmd = @"
+    Write-Verbose "Phase-3 quick-check: ensuring guest work directory before uploading quick-check script."
+
+    $phase3cmd = @"
 sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
 "@
-        $null = Invoke-VMScript -VM $vm -ScriptText $phase3cmd -GuestUser $guestUser -GuestPassword $guestPass `
-            -ScriptType Bash -ErrorAction Stop
-        Write-Log "Ensured work directory exists on the VM: '$workDirOnVM'"
-    } catch {
-        Write-Log -Error "Failed to ensure work directory on the VM: $_"
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText $phase3cmd -ScriptType Bash
+    if (-not $res) {
+        Write-Log -Error "Failed to ensure work directory on the VM: $workDirOnVM"
         Remove-Item -Path $localQuickPath -ErrorAction SilentlyContinue
         Exit 1
     }
+    Write-Log "Ensured work directory exists on the VM: '$workDirOnVM'"
 
     if (-not $toolsAvailableForQuickCheck) {
         Write-Log -Warn "VMware Tools not available for quick-check; cannot reliably detect whether cloud-init ran in this boot. Proceeding to normal cloud-init completion polling as a fallback."
@@ -1790,26 +2170,35 @@ sudo /bin/bash -c "mkdir -p $workDirOnVM && chown $guestUser $workDirOnVM"
         Write-Log "Copying quick-check script to the VM..."
         while (-not $qcCopied -and $qcAttempt -lt $maxQCAttempts) {
             $qcAttempt++
-            try {
-                $null = Copy-VMGuestFile -LocalToGuest -Source $localQuickPath -Destination $guestQuickPath `
-                    -VM $vm -GuestUser $guestUser -GuestPassword $guestPass -Force -ErrorAction Stop
+
+            $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -Source $localQuickPath -Destination $guestQuickPath
+
+            if ($resCopy) {
                 $phase3cmd = @"
 sudo /bin/bash -c "chmod +x $guestQuickPath"
 "@
-                $null = Invoke-VMScript -VM $vm -ScriptText $phase3cmd -ScriptType Bash `
-                    -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
-                $qcCopied = $true
-                Write-Log "Copied quick-check script to the VM: '$guestQuickPath' (attempt: $qcAttempt)"
-            } catch {
-                Write-Verbose "Copy-VMGuestFile for quick-check failed (attempt: $qcAttempt): $_"
-                # try waiting for tools briefly and retry
-                $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 10 -PollIntervalSec 2
-                if (-not $toolsOk2) {
-                    Write-Verbose "VMware Tools still unavailable; sleeping before next quick-check copy attempt..."
-                    Start-Sleep -Seconds 5
-                } else {
-                    Write-Verbose "VMware Tools recovered; retrying quick-check copy..."
+                $resChmod = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                    -ScriptText $phase3cmd -ScriptType Bash
+
+                if ($resChmod) {
+                    $qcCopied = $true
+                    Write-Log "Copied quick-check script to the VM: '$guestQuickPath' (attempt: $qcAttempt)"
+                    break
                 }
+
+                Write-Verbose "Quick-check script copy succeeded but chmod failed (attempt: $qcAttempt)."
+            } else {
+                Write-Verbose "Copy-VMGuestFile for quick-check failed (attempt: $qcAttempt)."
+            }
+
+            # try waiting for tools briefly and retry
+            $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 10 -PollIntervalSec 2
+            if (-not $toolsOk2) {
+                Write-Verbose "VMware Tools still unavailable; sleeping before next quick-check copy attempt..."
+                Start-Sleep -Seconds 5
+            } else {
+                Write-Verbose "VMware Tools recovered; retrying quick-check copy..."
             }
         }
 
@@ -1822,11 +2211,13 @@ sudo /bin/bash -c "chmod +x $guestQuickPath"
             Write-Log -Warn "Failed to upload quick-check script to the VM after $maxQCAttempts attempts; as a fallback, proceeding to normal cloud-init completion polling."
         } else {
             # Execute quick-check on guest and collect output
+            Write-Verbose "Phase-3 quick-check: executing quick-check script inside guest."
+
             try {
-                Write-Log "Performing quick check to collect clout-init base status..."
+                Write-Log "Performing quick check to collect cloud-init base status..."
                 $qcExecCmd = "sudo /bin/bash '$guestQuickPath'"
-                $qcRes = Invoke-VMScript -VM $vm -ScriptText $qcExecCmd -ScriptType Bash `
-                    -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
+                $qcRes = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                    -ScriptText $qcExecCmd -ScriptType Bash
                 $qcExecuted = $true
             } catch {
                 Write-Log -Warn "Quick-check execution failed (Invoke-VMScript error): $_. Proceeding with normal cloud-init completion polling."
@@ -1868,12 +2259,12 @@ sudo /bin/bash -c "chmod +x $guestQuickPath"
                     Write-Log "Current cloud-init instance-id: $currentInstanceId"
                 }
 
-                try {
-                    $null = Invoke-VMScript -VM $vm -ScriptText "rm -f $guestQuickPath" -ScriptType Bash `
-                        -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
+                $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                    -ScriptText "rm -f $guestQuickPath" -ScriptType Bash
+                if ($res) {
                     Write-Log "Removed quick-check script from the VM: $guestQuickPath"
-                } catch {
-                    Write-Log -Warn "Failed to remove quick-check script from the VM: $_"
+                } else {
+                    Write-Log -Warn "Failed to remove quick-check script from the VM: $guestQuickPath"
                 }
 
                 switch ($qcRes.ExitCode) {
@@ -1973,29 +2364,39 @@ exit 1
     $attempt = 0
     $copied = $false
 
+    Write-Verbose "Phase-3 completion-check: uploading check-cloud-init script to guest."
     Write-Log "Copying check script to the VM..."
     while (-not $copied -and $attempt -lt $maxAttempts) {
         $attempt++
-        try {
-            $null = Copy-VMGuestFile -LocalToGuest -Source $localCheckPath -Destination $guestCheckPath `
-                -VM $vm -GuestUser $guestUser -GuestPassword $guestPass -Force -ErrorAction Stop
+
+        $resCopy = Copy-VMGuestFileWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+            -Source $localCheckPath -Destination $guestCheckPath
+
+        if ($resCopy) {
             $phase3cmd = @"
 sudo /bin/bash -c "chmod +x $guestCheckPath"
 "@
-            $null = Invoke-VMScript -VM $vm -ScriptText $phase3cmd -ScriptType Bash `
-                -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction stop
-            $copied = $true
-            Write-Log "Copied check script to the VM: '$guestCheckPath' (attempt: $attempt)"
-        } catch {
-            Write-Verbose "Copy-VMGuestFile failed (attempt: $attempt): $_"
-            # try waiting for tools briefly and retry
-            $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
-            if (-not $toolsOk2) {
-                Write-Verbose "VMware Tools still unavailable; sleeping before next copy attempt..."
-                Start-Sleep -Seconds 10
-            } else {
-                Write-Verbose "VMware Tools recovered; retrying copy..."
+            $resChmod = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -ScriptText $phase3cmd -ScriptType Bash
+
+            if ($resChmod) {
+                $copied = $true
+                Write-Log "Copied check script to the VM: '$guestCheckPath' (attempt: $attempt)"
+                break
             }
+
+            Write-Verbose "Completion-check script copy succeeded but chmod failed (attempt: $attempt)."
+        } else {
+            Write-Verbose "Copy-VMGuestFile failed (attempt: $attempt)."
+        }
+
+        # try waiting for tools briefly and retry
+        $toolsOk2 = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
+        if (-not $toolsOk2) {
+            Write-Verbose "VMware Tools still unavailable; sleeping before next copy attempt..."
+            Start-Sleep -Seconds 10
+        } else {
+            Write-Verbose "VMware Tools recovered; retrying copy..."
         }
     }
 
@@ -2020,10 +2421,12 @@ sudo /bin/bash -c "chmod +x $guestCheckPath"
     Write-Log "Waiting for cloud-init to finish inside VM, polling $guestCheckPath (max ${cloudInitWaitTotalSec}s)..."
 
     :cmppoll while ($elapsed -lt $cloudInitWaitTotalSec) {
+        Write-Verbose "Phase-3 completion-check: invoking guest-side cloud-init completion probe."
+
         try {
             $execCmd = "sudo /bin/bash '$guestCheckPath'"
-            $res = Invoke-VMScript -VM $vm -ScriptText $execCmd -ScriptType Bash `
-                -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
+            $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -ScriptText $execCmd -ScriptType Bash
             $checkExecuted = $true
         } catch {
             Write-Log -Warn "Cloud-init completion check execution failed (Invoke-VMScript error): $_"
@@ -2092,12 +2495,12 @@ sudo /bin/bash -c "chmod +x $guestCheckPath"
         $elapsed += $cloudInitPollSec
     }
 
-    try {
-        $null = Invoke-VMScript -VM $vm -ScriptText "rm -f $guestCheckPath" -ScriptType Bash `
-            -GuestUser $guestUser -GuestPassword $guestPass -ErrorAction Stop
+    $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+        -ScriptText "rm -f $guestCheckPath" -ScriptType Bash
+    if ($res) {
         Write-Log "Removed check script from the VM: $guestCheckPath"
-    } catch {
-        Write-Verbose "Failed to remove check script from the VM: $_"
+    } else {
+        Write-Log -Warn "Failed to remove check script from the VM: $guestCheckPath"
     }
 
     if (-not $cloudInitDone) {
@@ -2186,30 +2589,24 @@ function CloseDeploy {
             Write-Log "Skipped deactivation of cloud-init; NoRestart specified and VM is not PoweredOn."
         } else {
             # Normal behaviour: wait for VMware Tools and attempt to create cloud-init.disabled.
-            $toolsOk = Wait-ForVMwareTools -VM $vm -TimeoutSec 30
+            $toolsOk = Wait-ForVMwareTools -VM $vm -TimeoutSec 60
             if (-not $toolsOk) {
                 Write-Log -Error "Unable to disable cloud-init since VMware Tools is NOT running. Make sure the VM is powered on and rerun Phase-4."
                 Exit 1
             }
 
-            # Prepare username and password for VM commands
-            $guestUser = $params.username
-            $guestPassPlain = $params.password
-            $guestPass = ConvertToSecureStringFromPlain $guestPassPlain
-            if (-not $guestPass) {
-                Write-Log -Error "Failed to convert guest password to SecureString. Aborting in Phase-4."
-                Exit 3
-            }
+            # Prepare guest user context for VM commands
+            $guestUser = $primaryUserContext.GuestUserName
 
-            try {
-                $phase4cmd = @'
+            $phase4cmd = @'
 sudo /bin/bash -c "install -m 644 /dev/null /etc/cloud/cloud-init.disabled"
 '@
-                $null = Invoke-VMScript -VM $vm -ScriptText $phase4cmd -GuestUser $guestUser `
-                    -GuestPassword $guestPass -ScriptType Bash -ErrorAction Stop
+            $res = Invoke-VMScriptWithCredFallback -VM $vm -PrimaryUserContext $primaryUserContext `
+                -ScriptText $phase4cmd -ScriptType Bash
+            if ($res) {
                 Write-Log "Created /etc/cloud/cloud-init.disabled to prevent future cloud-init invocation."
-            } catch {
-                Write-Log -Error "Failed to create cloud-init.disabled file: $_"
+            } else {
+                Write-Log -Error "Failed to create cloud-init.disabled file."
             }
         }
     } else {

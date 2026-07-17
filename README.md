@@ -18,22 +18,30 @@ This kit is designed to enable quick and reproducible deployment of Linux VMs fr
 📝 **Note — DiskOnly mode**  
 The primary workflow remains template → clone → initialization → personalization. In addition, this kit provides an optional extension called **DiskOnly Mode** that lets you reapply only disk expansion (partition/filesystem/swap) on VMs previously deployed with this kit. See [DiskOnly Reapply Mode](#-diskonly-reapply-mode) for details.
 
-### ⚠️ Caution: Parameter and template format changes
+### ⚠️ Caution: Parameter and template compatibility notes
 
-Between `cloudinit-linux-vm-deploy.ps1` versions **0.1.5** and **0.1.7**, updates were introduced to the parameter and seed‑template formats (multi-user support, per-user SSH key placement, DNS nameserver handling, and a consolidated swaps mapping). When your main script version crosses this range, you must upgrade the parameter files and seed template YAMLs in lockstep with `cloudinit-linux-vm-deploy.ps1`. To verify that they are coordinated correctly, validate the generated seed files:
+**🆕 Note ― `cloudinit-linux-vm-deploy.ps1` since `v0.3.4`:**
 
-- Run the script with Phase 3 only and with `-NoRestart` to produce the seed files without reapplying personalization to a VM:
-  ```powershell
-  .\cloudinit-linux-vm-deploy.ps1 -Phase 3 -Config .\params\<your_params>.yaml -NoRestart
-  ```
-- Inspect `spool/<new_vm_name>/cloudinit-seed/` `user-data` and `network-config` to confirm formatting and indentation.
+- In `templates/user-data_template.yaml`, the cloud-init user password field was changed from `passwd:` to `hashed_passwd:`.  
+- In versions up to `v0.3.3`, this kit assumed the primary user’s password on the deployed VM remained the same as on the Template VM, so it could go unnoticed that cloud-init was in practice not reapplying the password for that already-existing user.  
+- Since `v0.3.4` adds support for changing the primary user’s password on the final deployed VM independently from the guest-operation password, this behavior is now corrected and the template must be updated in lockstep. If you update `cloudinit-linux-vm-deploy.ps1` to `v0.3.4` or later, update your copied `user-data_template.yaml` as well.
 
-See [UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md](UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md) in this directory for detailed notes and examples.
-
-🆕 **Note (since v0.3.0):**
+**Note ― `cloudinit-linux-vm-deploy.ps1` since `v0.3.0`:**
 
 - The `vcenter_user` field in `params/vm-settings_*.yaml` is now required.  
   When `vcenter_password` is blank or omitted, the script relies on a [credential store](#admin-host-powershell-environment--windows-is-the-primary-target) but still needs an explicit `vcenter_user` to resolve and cache credentials correctly.
+
+**Note ― `cloudinit-linux-vm-deploy.ps1` between `v0.1.5` and `v0.1.7`:**
+
+- Parameter and seed-template format updates were introduced in this range, including multi-user support, per-user SSH key placement, DNS nameserver handling, and a consolidated `swaps` mapping.  
+- When your main script version crosses this range, you must upgrade the parameter files and seed template YAMLs in lockstep with `cloudinit-linux-vm-deploy.ps1`.  
+- To verify that they are coordinated correctly, run the script with Phase 3 only and with `-NoRestart` to produce the seed files without reapplying personalization to a VM:
+  ```powershell
+  .\cloudinit-linux-vm-deploy.ps1 -Phase 3 -Config .\params\.yaml -NoRestart
+  ```
+- Then inspect `spool//cloudinit-seed/` `user-data` and `network-config` to confirm formatting and indentation.  
+
+  See [UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md](UPGRADE_NOTES_PARAM_FORMAT_CHANGE.md) in this directory for detailed notes and examples.
 
 ---
 
@@ -153,6 +161,9 @@ It may consist of considerable minimal resources, e.g., 2 CPUs, 2.1GB memory, 8G
 - A CD/DVD device configured on the VM (seed ISO must be attached to the guest's CD drive)  
 - Copy `infra/` to the template and run `prevent-cloud-init.sh` as root to install infra files and create `/etc/cloud/cloud-init.disabled`  
 - Provide valid guest credentials for in‑guest operations: Define at least one user in the parameter file (typically as `user1`) and mark the intended account with `primary: true`. The selected primary user’s credentials are used for in‑guest actions such as `Invoke-VMScript` and other guest API calls. The account must be a real, local-login-capable administrative user on the Template VM (able to log in via the VM console) and must be able to run `sudo /bin/bash` without an interactive password prompt (for example via an appropriate `NOPASSWD:` sudoers rule).  
+  - In normal mode, `userN.password` is the final deployed password and `userN.password_hash` is the final deployed password hash. Optionally, the primary user may define `userN.operation_password` as a separate initial guest-operation password already valid on the template VM. If `operation_password` is omitted for the primary user, the script falls back to `password`.
+  - During normal-mode Phase‑3, the script prefers `operation_password` first and then `password`, and caches the credential that succeeds so guest operations can continue even after cloud-init changes the primary user's password.
+  - `operation_password` is ignored for non-primary users and the script emits a warning if it is specified there.
 👉 For a short checklist and examples of the parameter/template format, see [Caution: Parameter and template format changes](#%EF%B8%8F-caution-parameter-and-template-format-changes).
 
 📝 **Notes and limitations:**
@@ -339,6 +350,7 @@ The DiskOnly reapply mode, introduced in cloudinit-linux-vm-deploy.ps1 (v0.1.8),
 
 ### Design Considerations
 DiskOnly mode is designed to suppress the usual cloud-init effects such as user creation and network changes, and to run only the cloud-init modules required for disk operations. To work correctly, the kit must include the appropriate parameter file, seed YAML, and scripts in the tree.
+In this mode, cloud-init does not register or update final user passwords; the primary user's `operation_password` (or fallback `password`) is used only for guest operations performed by the script itself.
 
 ⚠️ **Important:**  
 A reapply is triggered by a different cloud-init `instance_id` than the previous deployment. For DiskOnly mode, ensure the `instance_id` in your parameter file has never been used in any previous deployment (for example, append or replace a date suffix at least).  

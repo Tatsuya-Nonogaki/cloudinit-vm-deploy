@@ -5,7 +5,7 @@
 # IMPORTANT: Ensure 'hostname' parameter is the same as the current hostname to avoid surprises
 hostname: {{hostname}}
 
-# No users block modification; the template should not change users or passwords
+# No users block modification; DiskOnly mode does not register or update final user passwords through cloud-init
 
 package_update: false
 package_upgrade: false

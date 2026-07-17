@@ -20,7 +20,7 @@ users:
     groups: {{user1.groups}}
    #sudo: ALL=(ALL) NOPASSWD:ALL   # Uncomment only if you want cloud-init to set sudoers for this user
     lock_passwd: false             # DO NOT set true in this framework (see above)
-    passwd: {{user1.password_hash}}
+    hashed_passwd: {{user1.password_hash}}
     ssh_authorized_keys:           # Placeholder forms lines of ' - "ssh-rsa AAAAB3..."'; No need to comment-out these lines even if userN.ssh_keys list is empty
 {{user1.SSH_KEYS}}
     shell: /bin/bash
@@ -29,7 +29,7 @@ users:
 #  - name: {{user2.name}}
 #    groups: {{user2.groups}}
 #    lock_passwd: false
-#    passwd: {{user2.password_hash}}
+#    hashed_passwd: {{user2.password_hash}}
 #    ssh_authorized_keys:
 #{{user2.SSH_KEYS}}
 #    shell: /bin/bash
