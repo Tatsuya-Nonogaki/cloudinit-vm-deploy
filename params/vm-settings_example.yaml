@@ -86,17 +86,20 @@ user1:
   name: admin01
   primary: true  # This user will be selected for in-guest operations
   groups: "wheel,adm,systemd-journal"
-  password: "AdminPass123!"    # As plain string for use with PowerShell logics
-  password_hash: "$6$rounds=656000$YourHashHere123$abcdef..."      # SHA-512 salted-hash string for user registration in the guest Linux: Generate using "openssl passwd -6 'password'"
+  operation_password: "TemplateAdminPass123!"   # Plain-text password currently valid for the primary user on the Template VM. Omit this field if the deployed VM should keep the same password
+  password: "AdminPass123!"                     # Final plain-text password for the primary user on the deployed VM
+  password_hash: "$6$rounds=656000$YourHashHere123$abcdef..."      # Hash of the final deployed password above, for user registration in the guest Linux: Generate using "openssl passwd -6 'password'"
   ssh_keys:
-    - "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArandomkey1... admin01@workstation"
+    - "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEArandomkey1... admin01@workstation"   # ssh keys are optional
    #- "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIrandomkey2... admin01@laptop"
 
+# Additional user example: uncomment to use; make sure to uncomment the correspoiding block in user-data_template.yaml 
 #user2:
 #  name: deploy01
-#  password: "DeployPass456!"
+#  password: "DeployPass456!"                   # Plain-text password for this user when created on the deployed VM
 #  password_hash: "$6$rounds=656000$YourHashHere456$ghijkl..."
 #  groups: "wheel"
+#  #operation_password: "IgnoredForNonPrimary!" # Ignored with a warning unless this user is marked primary:true; leave commented out or remove
 #  ssh_keys:
 #    - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCrandomkey3... deploy01@ci-server"
 
@@ -107,4 +110,3 @@ cloudinit_poll_sec: 10         # Default:10
 cloudinit_tools_wait_sec: 60   # VMwareTools wait time in each poll failure; default:60
 cloudinit_tools_poll_sec: 10   # Default:10
 cloudinit_backoff_sec: 60      # Pause before the polling above starts; default:60
-

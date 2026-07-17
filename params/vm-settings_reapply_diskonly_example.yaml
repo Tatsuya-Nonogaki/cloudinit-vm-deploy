@@ -25,7 +25,8 @@ seed_iso_copy_store: "[COMMSTORE01] cloudinit-iso/"
 user1:
   name: admin01
   primary: true
-  password: "AdminPass123!"
+  operation_password: "AdminPass123!"   # Plain-text password currently valid for the primary user on the guest. In DiskOnly mode, this is the intended field
+  #password: "AdminPass123!"            # Same password as above; consulted only if operation_password is missing, for backward compatibility with older DiskOnly settings files
 
 # == Disk targets (only what you intend to resize) ==
 # Swap devices: their partitions will be expanded (growpart) and the devices reinitialized (mkswap) so the swap fills the enlarged partitions.
@@ -39,6 +40,7 @@ resize_fs:
 
 # == OS/Cloud-init Parameters ==
 # IMPORTANT: provide a fresh instance-id (different from the original deployment)
+# DiskOnly mode does not register or update final user passwords through cloud-init; the password fields above are only for guest operations.
 instance_id: original01-reapply-20251209-01
 hostname: original01
 fqdn: original01.production.local
