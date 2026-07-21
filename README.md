@@ -285,7 +285,7 @@ Phase 1–3 form the main deployment flow. Phase 4 is a post-processing/finaliza
 
 **High-level steps:**
 1. Shut down the VM (unless `-NoRestart` is requested and accepted) if it is not already powered off.  
-2. Ensure a local seed working directory and render `user-data`, `meta-data`, and (if present) `network-config` from the templates, replacing placeholders from `params`. For `user-data`, the script may inject a kit-specific `runcmd` block to:
+2. Ensure a local seed working directory and render `user-data`, `meta-data`, and (if present) `network-config` from the seed YAML templates in `templates/`, replacing placeholders from `params`. For `user-data`, the script may inject a kit-specific `runcmd` block to:
    - Run `resize2fs` on specified non-root partitions.  
    - Reinitialize and resize swap devices with careful UUID updates to `/etc/fstab`.  
    - Modify NetworkManager Ethernet connection profiles with `nmcli` (`ignore-auto-routes`, `ignore-auto-dns`, IPv6 disablement).  
@@ -299,6 +299,7 @@ Phase 1–3 form the main deployment flow. Phase 4 is a post-processing/finaliza
 - cloud-init has applied the personalization and the VM is ready; VM remains powered on.
 
 **Cautions / Notes:**
+- Alternative seed template YAMLs can be used while keeping the standard files intact: When you specify `-TemplateExtension FOO` at run time, `templates/*_FOO_template.yaml` are sought. If such file with that name does not exist, it falls back to standard YAML for that specific template.
 - `/etc/hosts` is completely overwritten by the template's entries. If you need extra static host records, add them to the `write_files > content` section of `templates/user-data_template.yaml` before running Phase 3.  
 - If `/etc/cloud/cloud-init.disabled` exists on the guest, Phase 3 cannot apply the seed — the script checks for this file and aborts when it can be detected. If the VM is powered off at the start of Phase 3 the script cannot probe the file and will continue; in that case cloud‑init may not be applied in the run; manual intervention may be required.  
 - If `-NoRestart` prevents the required pre-shutdown (and therefore the boot at the end of this phase), the clone will not automatically apply the cloud‑init personalization even though the seed ISO is attached. Phase 3 will emit a warning in that case; a manual reboot is required to apply the modification.  

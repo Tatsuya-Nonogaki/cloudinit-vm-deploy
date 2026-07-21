@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Automated vSphere Linux VM deployment using cloud-init seed ISO.
-  Version: 0.3.4
+  Version: 0.3.5
 
 .DESCRIPTION
   Automate deployment of a Linux VM from template VM, leveraging cloud-init, in 4 phases:
@@ -30,6 +30,15 @@
 
 .PARAMETER Config
   (Alias -c) Path to parameter YAML file for the VM deployment.
+
+.PARAMETER TemplateExtension
+  (Alias -e) Use this to select alternative seed template YAML files. Specified EXTENSION
+  is inserted into each standard YAML file name in front of '_template.' part, and they will
+  be sought in the tempaltes directory. For example:
+  * user-data_template.yaml -> user-data_EXTENSION_template.yaml
+  * user-data_diskonly_template.yaml -> user-data_diskonly_EXTENSION_template.yaml
+  If such file with EXTENSION does not exist, it falls back to standard name for that
+  specific template.
 
 .PARAMETER DiskOnly
   Set this when you want to reapply cloud-init exclusively for disk size expansion on the 
@@ -76,6 +85,10 @@ param(
     [Parameter(Mandatory)]
     [Alias("c")]
     [string]$Config,
+
+    [Parameter()]
+    [Alias("e")]
+    [string]$TemplateExtension,
 
     [Parameter()]
     [switch]$DiskOnly,
@@ -1549,6 +1562,19 @@ function CloudInitKickStart {
             $seedFiles += @{tpl="network-config_template.yaml"; out="network-config"}
         } else {
             Write-Log "cloud-config YAML template: '$netTpl' not found; omitted."
+        }
+    }
+
+    if ($TemplateExtension) {
+        foreach ($f in $seedFiles) {
+            $extendedTpl = $f.tpl -replace '_template\.yaml$', "_${TemplateExtension}_template.yaml"
+            $extendedTplPath = Join-Path $tplDir $extendedTpl
+            if (Test-Path $extendedTplPath) {
+                $f.tpl = $extendedTpl
+                Write-Log "TemplateExtension '$TemplateExtension' was specified, using '$extendedTpl'"
+            } else {
+                Write-Log -Warn "TemplateExtension '$TemplateExtension' was specified but file '$extendedTpl' does not exist. Falling back to default '$($f.tpl)'"
+            }
         }
     }
 
